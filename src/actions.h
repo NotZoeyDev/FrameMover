@@ -35,6 +35,11 @@ public:
 	std::vector<std::pair<std::string, std::string>> Bindings();
 	// Opens SteamVR's own binding editor for this app.
 	bool OpenBindingEditor( const std::string &appKey );
+	// SteamVR loads the bindings a user saved in its editor from the Steam Workshop. When the controllers connect before
+	// Steam has logged in, that load fails and SteamVR silently falls back to the shipped default bindings for the rest
+	// of the session. The saved item is already on disk, so point SteamVR's "current bindings" setting at a local copy of
+	// it instead: loading it then never needs Steam. Safe to call again; does nothing once the setting is a local file.
+	void PinUserBindings();
 
 private:
 	uint64_t m_set = 0;

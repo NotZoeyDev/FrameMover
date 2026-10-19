@@ -31,6 +31,11 @@ int main( int argc, char **argv )
 	CHECK( Pretty( "/user/head" ) == "Head" );
 	CHECK( Pretty( "already localized" ) == "already localized" );
 
+	// Only a well-formed workshop url counts as "saved in SteamVR's editor"; anything else must be left alone.
+	CHECK( WorkshopItemId( "vr-input-workshop://3822741892" ) == "3822741892" );
+	for ( const char *url : { "", "file:///home/x/bindings.json", "vr-input-workshop://", "vr-input-workshop://12ab", "vr-input-workshop://12/../3",
+			  "vr-input-workshop:/1", "xvr-input-workshop://1" } )
+		CHECK( WorkshopItemId( url ).empty() );
 	// A localized description may contain escaped JSON-looking text, backslashes, or UTF-8.
 	// None may be mistaken for a source. Empty/unrelated fields and haptic paths are ignored.
 	const char *escaped = R"JSON({

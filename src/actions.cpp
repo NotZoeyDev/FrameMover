@@ -1,12 +1,18 @@
 #include "actions.h"
 #include "bindings.h"
+#include "config.h"
 #include "files.h"
+#include "log.h"
 
 #include <openvr.h>
 
 #include "app.h"
 
 #include <algorithm>
+#include <cstdio>
+
+#include <dirent.h>
+#include <sys/stat.h>
 
 using namespace vr;
 using namespace bindings;
@@ -36,7 +42,78 @@ bool UserHasCustomBindings()
 	}
 	return false;
 }
+
+constexpr const char *kCurrentUrlKey = "frame_controller_250820_CurrentURL_steamvrinput";
+
+std::string PinnedBindingPath()
+{
+	return ConfigDir() + "/user-bindings/frame_controller.json";
+}
+
+// The binding file SteamVR keeps on disk for a workshop item of its own app (250820): one "<number>_legacy.bin" (JSON) per item.
+bool ReadWorkshopBinding( const std::string &itemId, std::string &json )
+{
+	for ( const std::string &steam : { files::Home() + "/.local/share/Steam", files::Home() + "/.steam/steam" } )
+	{
+		const std::string dir = steam + "/steamapps/workshop/content/250820/" + itemId;
+		DIR *d = opendir( dir.c_str() );
+		if ( !d )
+			continue;
+		std::string best;
+		time_t bestTime = 0;
+		while ( dirent *e = readdir( d ) )
+		{
+			const std::string name = e->d_name;
+			struct stat st;
+			if ( name.size() < 11 || name.compare( name.size() - 11, 11, "_legacy.bin" ) != 0 || stat( ( dir + "/" + name ).c_str(), &st ) != 0 )
+				continue;
+			if ( best.empty() || st.st_mtime > bestTime )
+			{
+				best = dir + "/" + name;
+				bestTime = st.st_mtime;
+			}
+		}
+		closedir( d );
+		// It must really be our bindings: a half-written or foreign file would replace a working configuration.
+		if ( !best.empty() && files::ReadFile( best, json ) && json.find( "\"app_key\"" ) != std::string::npos && json.find( kAppKey ) != std::string::npos )
+			return true;
+	}
+	return false;
+}
 } // namespace
+
+void Actions::PinUserBindings()
+{
+	IVRSettings *st = VRSettings();
+	if ( !st )
+		return;
+	char value[256] = {};
+	EVRSettingsError err = VRSettingsError_None;
+	st->GetString( kAppKey, kCurrentUrlKey, value, sizeof value, &err );
+	const std::string item = err == VRSettingsError_None ? WorkshopItemId( value ) : "";
+	if ( item.empty() )
+		return; // nothing saved, or SteamVR already points at a local file
+	std::string json;
+	if ( !ReadWorkshopBinding( item, json ) )
+	{
+		logging::Printf( "saved bindings are workshop item %s but it is not on disk; leaving SteamVR's setting alone\n", item.c_str() );
+		return;
+	}
+	const std::string path = PinnedBindingPath();
+	std::string existing;
+	if ( !files::ReadFile( path, existing ) || existing != json )
+	{
+		files::MakeDirs( path.substr( 0, path.rfind( '/' ) ) );
+		const std::string temp = path + ".tmp";
+		if ( !files::WriteFile( temp, json ) || std::rename( temp.c_str(), path.c_str() ) != 0 )
+		{
+			logging::Printf( "could not write %s\n", path.c_str() );
+			return;
+		}
+	}
+	st->SetString( kAppKey, kCurrentUrlKey, ( "file://" + path ).c_str(), &err );
+	logging::Printf( "pinned the saved bindings (workshop item %s) to %s: %s\n", item.c_str(), path.c_str(), st->GetSettingsErrorNameFromEnum( err ) );
+}
 
 bool Actions::Init( const std::string &manifestPath, bool overrideGameInput, std::string &error )
 {
@@ -46,6 +123,7 @@ bool Actions::Init( const std::string &manifestPath, bool overrideGameInput, std
 		error = "IVRInput unavailable";
 		return false;
 	}
+	PinUserBindings(); // before SteamVR loads anything for us: the controllers may already be about to connect
 	EVRInputError e = in->SetActionManifestPath( manifestPath.c_str() );
 	if ( e != VRInputError_None )
 	{

@@ -15,6 +15,12 @@ void Playspace::Rebase( const Mat34 &standing, const Mat34 &seated )
 	Reset();
 }
 
+void Playspace::Rebaseline( const Mat34 &standing, const Mat34 &seated )
+{
+	m_standing = standing;
+	m_seated = seated;
+}
+
 void Playspace::Reset()
 {
 	m_yaw = 0;
@@ -154,4 +160,11 @@ bool NearPose( const Mat34 &a, const Mat34 &b, double posTol, double rotTolRad )
 			error += ( a.m[r][c] - b.m[r][c] ) * ( a.m[r][c] - b.m[r][c] );
 	const double limit = std::sin( rotTolRad / 2 );
 	return std::isfinite( error ) && ( rotTolRad >= M_PI || error <= 8 * limit * limit );
+}
+
+bool OnlyHeightDiffers( const Mat34 &a, const Mat34 &b, double posTol, double rotTolRad )
+{
+	Mat34 level = b;
+	level.m[1][3] = a.m[1][3];
+	return NearPose( a, level, posTol, rotTolRad ) && std::fabs( a.m[1][3] - b.m[1][3] ) > posTol;
 }

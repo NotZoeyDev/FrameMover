@@ -9,7 +9,9 @@
 
 #include "app.h"
 #include "backup.h"
+#include "files.h"
 #include "install.h"
+#include "log.h"
 #include "panel.h"
 
 static void OnSignal( int )
@@ -110,14 +112,20 @@ int main( int argc, char **argv )
 	if ( !selftest && !BecomeOnlyInstance() )
 		return 0;
 	const std::string backups = BackupChaperoneFile(); // before anything can touch the working copy
+	if ( !selftest )
+	{
+		files::MakeDirs( files::Home() + "/.local/share/frame-mover" );
+		logging::Open( files::Home() + "/.local/share/frame-mover/frame-mover.log" );
+		logging::Printf( "frame-mover starting\n" );
+	}
 	if ( !backups.empty() )
-		fprintf( stderr, "chaperone backups: %s\n", backups.c_str() );
+		logging::Printf( "chaperone backups: %s\n", backups.c_str() );
 
 	App app;
 	std::string error;
 	if ( !app.Init( error ) )
 	{
-		fprintf( stderr, "%s\n", error.c_str() );
+		logging::Printf( "%s\n", error.c_str() );
 		return 1;
 	}
 	if ( !selftest )

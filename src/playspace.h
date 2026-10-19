@@ -31,6 +31,9 @@ Mat34 ZeroPoseFromPoses( const Mat34 &deviceInRaw, const Mat34 &deviceInUniverse
 // True when two poses differ by less than `posTol` meters and `rotTolRad` radians.
 bool NearPose( const Mat34 &a, const Mat34 &b, double posTol, double rotTolRad );
 
+// True when `a` and `b` agree within the tolerances in x, z and rotation but not in height: what SteamVR does when it
+// pins the floor height of a relocalized playspace onto our zero pose.
+bool OnlyHeightDiffers( const Mat34 &a, const Mat34 &b, double posTol, double rotTolRad );
 // Rotation about +Y by `a` radians. Increases atan2(x, z) of a point by `a`.
 Vec3 RotateY( Vec3 v, double a );
 
@@ -43,6 +46,8 @@ class Playspace
 public:
 	// Captures the untouched zero poses (what the user had set) and clears all movement.
 	void Rebase( const Mat34 &standing, const Mat34 &seated );
+	// Swaps in new untouched zero poses but keeps the movement: the same D now applies to the new poses.
+	void Rebaseline( const Mat34 &standing, const Mat34 &seated );
 	// Back to the captured poses.
 	void Reset();
 

@@ -1,5 +1,7 @@
 #include "app.h"
+#include "backup.h"
 #include "files.h"
+#include "log.h"
 #include "vr_math.h"
 
 #include <unistd.h>
@@ -19,13 +21,31 @@ namespace
 {
 constexpr double kResetHoldSeconds = 1.5;
 constexpr double kRebaseDebounce = 0.3;
+constexpr double kResumeAfterPause = 3.0; // seconds before looking at the saved playspace again after another program edited it
+constexpr double kRoomSetupTimeout = 90.0; // seconds of waiting for SteamVR's room setup to report back
+constexpr double kReanchorEcho = 3.0;      // seconds during which commit events are taken as the echo of our own re-anchor
 constexpr double kDegToRad = M_PI / 180.0;
+// The universe id SteamVR gives the dummy chaperone while the headset is not tracking ("Switch to the dummy chaperone universe").
+constexpr uint64_t kDummyUniverse = 424242;
 
 double Now()
 {
 	return std::chrono::duration<double>( std::chrono::steady_clock::now().time_since_epoch() ).count();
 }
 
+constexpr double kTraceSeconds = 1.5;
+
+double YawOf( const Mat34 &m )
+{
+	return std::atan2( m.m[0][2], m.m[2][2] ) / kDegToRad;
+}
+
+std::string PoseText( const Mat34 &m )
+{
+	char text[80];
+	snprintf( text, sizeof text, "(%.3f %.3f %.3f yaw %.1f)", m.m[0][3], m.m[1][3], m.m[2][3], YawOf( m ) );
+	return text;
+}
 } // namespace
 
 std::string FindDataDir()
@@ -84,7 +104,7 @@ bool App::Init( std::string &error )
 	const std::string manifest = FindDataDir() + "/action_manifest.json";
 	m_inputOk = m_actions.Init( manifest, m_settings.overrideGameInput, m_inputError );
 	if ( !m_inputOk )
-		fprintf( stderr, "SteamVR Input unavailable: %s\n", m_inputError.c_str() );
+		logging::Printf( "SteamVR Input unavailable: %s\n", m_inputError.c_str() );
 
 	EVROverlayError oe = VROverlay()->CreateDashboardOverlay( kPanelKey, "FrameMover", &m_panel, &m_thumb );
 	if ( oe != VROverlayError_None )
@@ -115,11 +135,12 @@ bool App::Init( std::string &error )
 		m_panelTex = std::make_unique<OverlayTexture>( *m_vk );
 	else
 	{
-		fprintf( stderr, "Vulkan setup failed (%s); the panel will flicker (SetOverlayRaw fallback)\n", vkErr.c_str() );
+		logging::Printf( "Vulkan setup failed (%s); the panel will flicker (SetOverlayRaw fallback)\n", vkErr.c_str() );
 		m_vk.reset();
 	}
 
 	Rebase();
+	m_universe = CurrentUniverse();
 	return true;
 }
 
@@ -129,6 +150,7 @@ bool App::Init( std::string &error )
 void App::Rebase()
 {
 	m_rebaseAt = -1;
+	m_rebaseDropsMove = false;
 	for ( int h = 0; h < 2; h++ )
 	{
 		m_drag[h] = DragGesture();
@@ -139,6 +161,7 @@ void App::Rebase()
 	{
 		m_playspace.Rebase( standing, seated );
 		m_state = MoverState::Ready;
+		LogBaseline( "captured the saved playspace" );
 	}
 	else
 		m_state = MoverState::WaitingForChaperone;
@@ -146,6 +169,69 @@ void App::Rebase()
 	m_appliedOffset = {};
 	m_appliedYaw = 0;
 	m_panelDirty = true;
+}
+
+// SteamVR switched to another tracking universe (relocalization against a saved map, a new tracking world) or reloaded the
+// saved one. What we captured is stale and SteamVR has dropped our preview, but the move is still what the user wants:
+// capture the new saved playspace and put the same move on top of it.
+void App::Rebaseline()
+{
+	if ( !m_playspace.Moved() )
+	{
+		Rebase();
+		return;
+	}
+	m_rebaseAt = -1;
+	m_rebaseDropsMove = false;
+	Mat34 standing, seated;
+	if ( m_chaperone.Capture( standing, seated, true ) )
+	{
+		m_playspace.Rebaseline( standing, seated );
+		m_state = MoverState::Ready;
+		LogBaseline( "kept the move on the new saved playspace" );
+	}
+	else
+	{
+		m_playspace.Reset();
+		m_state = MoverState::WaitingForChaperone;
+	}
+	m_appliedAny = false; // ApplyIfChanged() writes the move again this tick
+	m_panelDirty = true;
+}
+
+void App::ScheduleRebase( bool dropMove )
+{
+	m_rebaseAt = Now() + kRebaseDebounce;
+	m_rebaseDropsMove = m_rebaseDropsMove || dropMove;
+}
+
+uint64_t App::CurrentUniverse() const
+{
+	ETrackedPropertyError err = TrackedProp_Success;
+	const uint64_t id = VRSystem()->GetUint64TrackedDeviceProperty( k_unTrackedDeviceIndex_Hmd, Prop_CurrentUniverseId_Uint64, &err );
+	return err == TrackedProp_Success ? id : 0;
+}
+
+// On the Frame a switch of the tracking universe is only announced with VREvent_ChaperoneFlushCache, and SteamVR throws away
+// the live preview (zero pose and bounds) when it happens. The id of the universe in use is the only reliable signal.
+void App::CheckUniverse()
+{
+	const uint64_t id = CurrentUniverse();
+	if ( id == 0 || id == m_universe )
+		return;
+	const uint64_t previous = m_universe;
+	m_universe = id;
+	if ( previous == 0 || m_state == MoverState::PausedBySetup )
+		return; // first reading; or SteamVR's room setup is running and will announce its result itself
+	// Losing tracking (the placeholder universe) and coming back starts a new tracking world: raw tracking space is not the
+	// same any more, so a move made in the old one means nothing. Switching between real universes (relocalizing against a
+	// saved map) keeps raw space, so the move survives.
+	const bool newWorld = id == kDummyUniverse || previous == kDummyUniverse;
+	logging::Printf( "tracking universe %llu -> %llu%s\n", (unsigned long long)previous, (unsigned long long)id,
+		newWorld ? " (tracking world changed: dropping the move)" : "" );
+	if ( newWorld )
+		m_reanchorTried = false; // the next relocalization may need it again
+	ScheduleRebase( newWorld );
 }
 
 void App::Pause( bool restore )
@@ -172,10 +258,11 @@ void App::ApplyIfChanged()
 	}
 	if ( !m_playspace.InRange() )
 	{
-		fprintf( stderr, "playspace moved out of the range OpenVR accepts; resetting to the original\n" );
+		logging::Printf( "playspace moved out of the range OpenVR accepts; resetting to the original\n" );
 		Rebase();
 		return;
 	}
+	const bool starting = !m_chaperone.PreviewShown();
 	if ( m_chaperone.Apply( m_playspace.Standing(), m_playspace.Seated(), m_settings.largeChaperone, m_settings.disableChaperone ) )
 	{
 		m_appliedAny = true;
@@ -183,51 +270,124 @@ void App::ApplyIfChanged()
 		m_appliedYaw = yaw;
 		m_lastApply = Now();
 		m_panelDirty = true;
+		if ( starting )
+		{
+			logging::Printf( "move started: ours %s, offset %.3f %.3f %.3f, yaw %.1f\n", PoseText( m_playspace.Standing() ).c_str(), off.x, off.y,
+				off.z, yaw );
+			StartTrace( m_lastApply );
+		}
 	}
 }
 
 // SteamVR can replace the live zero pose with the saved one without telling apps (its driver re-reads the chaperone file
 // in the background). The working copy still holds our values then, so nothing else notices. The only truth is what the
-// universe really uses, which we recover from the headset's pose in raw space and in the standing universe.
+// universe really uses, which we recover from the headset's pose in raw space and in the standing universe. The huge
+// play area is checked separately: it is dropped together with the zero pose, but a zero pose can look right by chance.
 void App::CheckLivePreview( double now )
 {
 	if ( !m_chaperone.PreviewShown() || !m_playspace.Moved() || m_rebaseAt >= 0 || now < m_healBackoffUntil )
 		return;
 	if ( now - m_lastApply < 0.6 || GestureActive() )
 		return; // just written, or being moved right now: the next write fixes it anyway
-	TrackedDevicePose_t raw[k_unTrackedDeviceIndex_Hmd + 1], stand[k_unTrackedDeviceIndex_Hmd + 1];
-	VRSystem()->GetDeviceToAbsoluteTrackingPose( TrackingUniverseRawAndUncalibrated, 0.0f, raw, k_unTrackedDeviceIndex_Hmd + 1 );
-	VRSystem()->GetDeviceToAbsoluteTrackingPose( TrackingUniverseStanding, 0.0f, stand, k_unTrackedDeviceIndex_Hmd + 1 );
-	const TrackedDevicePose_t &r = raw[k_unTrackedDeviceIndex_Hmd], &s = stand[k_unTrackedDeviceIndex_Hmd];
-	if ( !r.bPoseIsValid || !s.bPoseIsValid || r.eTrackingResult != TrackingResult_Running_OK || s.eTrackingResult != TrackingResult_Running_OK )
-		return;
-	const Mat34 live = ZeroPoseFromPoses( MatrixCast<Mat34>( r.mDeviceToAbsoluteTracking ), MatrixCast<Mat34>( s.mDeviceToAbsoluteTracking ) );
 	const Mat34 want = m_playspace.Standing();
-	if ( NearPose( live, want, 0.01, 0.01 ) )
+	Mat34 live = want;
+	const bool poseDiffers = LiveStanding( live ) && !NearPose( live, want, 0.01, 0.01 );
+	const bool boundsDropped = m_chaperone.BoundsDropped();
+	if ( !poseDiffers && !boundsDropped )
 		return;
 
 	const bool others = m_chaperone.ModifiedByOthers();
-	fprintf( stderr,
-		"live playspace differs from ours %.1f s after our last write (live origin %.3f %.3f %.3f, ours %.3f %.3f %.3f, working copy %s ours, "
-		"saved original %.3f %.3f %.3f)\n",
-		now - m_lastApply, live.m[0][3], live.m[1][3], live.m[2][3], want.m[0][3], want.m[1][3], want.m[2][3], others ? "NOT" : "still",
-		m_playspace.BaseStanding().m[0][3], m_playspace.BaseStanding().m[1][3], m_playspace.BaseStanding().m[2][3] );
+	logging::Printf( "live playspace differs from ours %.1f s after our last write (%s; live %s, ours %s, working copy %s ours, saved original %s)\n",
+		now - m_lastApply, poseDiffers ? ( boundsDropped ? "zero pose and play area" : "zero pose" ) : "play area", PoseText( live ).c_str(),
+		PoseText( want ).c_str(), others ? "NOT" : "still", PoseText( m_playspace.BaseStanding() ).c_str() );
 	if ( others )
 		return; // someone else edited the working copy: the existing "another program" path handles that
+	if ( poseDiffers && OnlyHeightDiffers( live, want, 0.01, 0.01 ) && !m_reanchorTried )
+	{
+		Reanchor( now );
+		return;
+	}
 	m_healTimes.erase( std::remove_if( m_healTimes.begin(), m_healTimes.end(), [now]( double t ) { return now - t > 20.0; } ), m_healTimes.end() );
 	if ( m_healTimes.size() >= 3 )
 	{
 		m_healBackoffUntil = now + 30.0;
 		m_healTimes.clear();
-		fprintf( stderr, "SteamVR keeps replacing the playspace; not re-applying for 30 s\n" );
+		logging::Printf( "SteamVR keeps replacing the playspace; not re-applying for 30 s\n" );
 		return;
 	}
 	m_healTimes.push_back( now );
 	if ( m_chaperone.Apply( m_playspace.Standing(), m_playspace.Seated(), m_settings.largeChaperone, m_settings.disableChaperone ) )
 	{
 		m_lastApply = now;
-		fprintf( stderr, "re-applied the playspace SteamVR had dropped\n" );
+		logging::Printf( "re-applied the playspace SteamVR had dropped\n" );
+		StartTrace( now );
 	}
+}
+
+// After the Frame relocalizes into a playspace saved against an older tracking map, SteamVR keeps writing that playspace's
+// floor height into the live standing origin many times a second (x, z and yaw stay ours), so no move can change the height.
+// Committing the saved playspace unchanged, as Accept in SteamVR's playspace setup does, re-anchors it to the current map
+// and that stops. Once per tracking world: if it does not help, the plain re-apply and its back-off take over.
+void App::Reanchor( double now )
+{
+	m_reanchorTried = true;
+	logging::Printf( "SteamVR is holding the floor height of a playspace anchored to an older tracking map; re-anchoring it to the current "
+					 "map (saved playspace committed unchanged, like Accept in SteamVR's playspace setup)\n" );
+	const std::string backups = BackupChaperoneFile(); // the file is about to be written: keep what it was
+	if ( backups.empty() )
+	{
+		logging::Printf( "could not back up chaperone_info.vrchap; not re-anchoring\n" );
+		return;
+	}
+	const bool ok = m_chaperone.Reanchor();
+	m_appliedAny = false; // the preview is down either way: the move is written again after the rebase
+	m_reanchoredAt = now;
+	logging::Printf( "%s\n", ok ? "re-anchored; putting the move back on top" : "SteamVR rejected the commit; putting the move back" );
+	ScheduleRebase( false );
+}
+
+bool App::LiveStanding( Mat34 &out ) const
+{
+	TrackedDevicePose_t raw[k_unTrackedDeviceIndex_Hmd + 1], stand[k_unTrackedDeviceIndex_Hmd + 1];
+	VRSystem()->GetDeviceToAbsoluteTrackingPose( TrackingUniverseRawAndUncalibrated, 0.0f, raw, k_unTrackedDeviceIndex_Hmd + 1 );
+	VRSystem()->GetDeviceToAbsoluteTrackingPose( TrackingUniverseStanding, 0.0f, stand, k_unTrackedDeviceIndex_Hmd + 1 );
+	const TrackedDevicePose_t &r = raw[k_unTrackedDeviceIndex_Hmd], &s = stand[k_unTrackedDeviceIndex_Hmd];
+	if ( !r.bPoseIsValid || !s.bPoseIsValid || r.eTrackingResult != TrackingResult_Running_OK || s.eTrackingResult != TrackingResult_Running_OK )
+		return false;
+	out = ZeroPoseFromPoses( MatrixCast<Mat34>( r.mDeviceToAbsoluteTracking ), MatrixCast<Mat34>( s.mDeviceToAbsoluteTracking ) );
+	return true;
+}
+
+void App::LogBaseline( const char *what ) const
+{
+	Mat34 live;
+	const bool tracking = LiveStanding( live );
+	logging::Printf( "%s in universe %llu: base %s, SteamVR live %s, %s\n", what, (unsigned long long)CurrentUniverse(),
+		PoseText( m_playspace.BaseStanding() ).c_str(), tracking ? PoseText( live ).c_str() : "(not tracking)", m_chaperone.SavedBoundsText().c_str() );
+}
+
+// Diagnostics: what SteamVR really uses, 20 times a second for a moment after we wrote a move.
+void App::StartTrace( double now )
+{
+	m_traceStart = now;
+	m_traceUntil = now + kTraceSeconds;
+	m_nextTrace = now;
+}
+
+void App::Trace( double now )
+{
+	if ( now >= m_traceUntil || now < m_nextTrace )
+		return;
+	m_nextTrace = now + 0.05;
+	Mat34 live;
+	if ( !LiveStanding( live ) )
+	{
+		logging::Printf( "  trace +%.2f s: not tracking\n", now - m_traceStart );
+		return;
+	}
+	const Mat34 want = m_playspace.Standing();
+	logging::Printf( "  trace +%.2f s: live %s, ours %s, diff x %+.3f y %+.3f z %+.3f yaw %+.1f\n", now - m_traceStart, PoseText( live ).c_str(),
+		PoseText( want ).c_str(), live.m[0][3] - want.m[0][3], live.m[1][3] - want.m[1][3], live.m[2][3] - want.m[2][3], YawOf( live ) - YawOf( want ) );
 }
 
 void App::Pulse( bool bothHands )
@@ -262,8 +422,12 @@ void App::HandleSystemEvent( const VREvent_t &ev )
 		s_quit = true;
 		break;
 	case VREvent_ChaperoneRoomSetupStarting:
-		// SteamVR's own room setup edits the same working copy; step aside and put everything back first.
+		// SteamVR's own room setup edits the same working copy; step aside and put everything back first. A committed setup
+		// ends the pause through its own events; a cancelled one sends none, so look again after a while rather than stay
+		// paused until the next restart.
 		Pause( true );
+		m_rebaseAt = Now() + kRoomSetupTimeout;
+		m_rebaseDropsMove = true;
 		break;
 	case VREvent_SeatedZeroPoseReset:
 	case VREvent_StandingZeroPoseReset:
@@ -273,19 +437,34 @@ void App::HandleSystemEvent( const VREvent_t &ev )
 			break;
 		[[fallthrough]];
 	case 807: // RoomSetupCommitted in current OpenVR, formerly RoomSetupFinished.
+		if ( Now() - m_reanchoredAt < kReanchorEcho )
+		{
+			// Our own commit announces itself like a finished room setup; the move stays.
+			ScheduleRebase( false );
+			break;
+		}
+		// The user recentered or finished room setup: whatever we held is stale and so is the move. Adopt the new
+		// playspace as the original once the burst of events is over.
+		logging::Printf( "playspace changed outside the mover (%s); adopting it as the new original\n",
+			VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
+		ScheduleRebase( true );
+		break;
 	case VREvent_ChaperoneUniverseHasChanged:
 	case VREvent_ChaperoneDataHasChanged:
-		// The saved playspace changed under us (new tracking universe, recenter, finished room setup): whatever we
-		// held is stale. Adopt the new one as the original once the burst of events is over.
-		fprintf( stderr, "playspace changed outside the mover (%s); adopting it as the new original\n",
-			VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
-		m_rebaseAt = Now() + kRebaseDebounce;
+		// SteamVR relocalized against a saved map or reloaded the chaperone: the saved playspace is new, but the user did
+		// not ask for that, so their move stays.
+		logging::Printf( "SteamVR switched the saved playspace (%s)\n", VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
+		ScheduleRebase( false );
+		break;
+	case VREvent_ChaperoneFlushCache:
+		m_nextUniverseCheck = 0; // how a new tracking universe announces itself on the Frame: read the universe id now
 		break;
 	case VREvent_ActionBindingReloaded:
 	case VREvent_Input_BindingLoadSuccessful:
 	case VREvent_Input_ActionManifestReloaded:
-		fprintf( stderr, "SteamVR reloaded the bindings (%s)\n", VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
+		logging::Printf( "SteamVR reloaded the bindings (%s)\n", VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
 		m_bindingsStale = true; // the user changed the bindings in SteamVR: re-read them
+		m_pinBindingsAt = Now() + 1.5; // and if they were saved just now, keep a local copy so a later start never needs Steam for them
 		break;
 	case VREvent_TrackedDeviceActivated:
 	case VREvent_TrackedDeviceDeactivated:
@@ -362,11 +541,22 @@ void App::Tick()
 	PollEvents();
 	if ( s_showDashboard.exchange( false ) )
 	{
-		fprintf( stderr, "second launch (quick-launch tile): showing the dashboard tab\n" );
+		logging::Printf( "second launch (quick-launch tile): showing the dashboard tab\n" );
 		ShowDashboardPanel();
 	}
+	if ( now >= m_nextUniverseCheck )
+	{
+		m_nextUniverseCheck = now + 0.25;
+		CheckUniverse();
+	}
+	Trace( now );
 	if ( m_rebaseAt >= 0 && now >= m_rebaseAt )
-		Rebase();
+	{
+		if ( m_rebaseDropsMove )
+			Rebase();
+		else
+			Rebaseline();
+	}
 	if ( m_state == MoverState::WaitingForChaperone && now >= m_nextRetry )
 	{
 		m_nextRetry = now + 2.0;
@@ -457,13 +647,16 @@ void App::Tick()
 	if ( MoveAllowed() )
 	{
 		ApplyIfChanged();
-		if ( m_playspace.Moved() && now >= m_nextExternalCheck )
+		if ( m_playspace.Moved() && m_rebaseAt < 0 && now >= m_nextExternalCheck )
 		{
 			m_nextExternalCheck = now + 0.25;
 			if ( m_chaperone.ModifiedByOthers() )
 			{
-				fprintf( stderr, "another program changed the chaperone working copy; pausing\n" );
+				// Not stuck for good: whatever the other program was doing, look at the saved playspace again shortly.
+				logging::Printf( "another program changed the chaperone working copy; pausing for %.0f s\n", kResumeAfterPause );
 				Pause( false );
+				m_rebaseAt = now + kResumeAfterPause;
+				m_rebaseDropsMove = true;
 			}
 			else
 				CheckLivePreview( now );
@@ -472,6 +665,11 @@ void App::Tick()
 
 	if ( m_inputOk && ( m_bindingsStale || now - m_lastBindingRefresh > 1.0 ) )
 		RefreshBindings( now );
+	if ( m_inputOk && m_pinBindingsAt >= 0 && now >= m_pinBindingsAt )
+	{
+		m_pinBindingsAt = -1;
+		m_actions.PinUserBindings();
+	}
 	if ( m_panelDirty && now >= m_panelRetryAt && VROverlay()->IsActiveDashboardOverlay( m_panel ) )
 		RedrawPanel();
 }
@@ -504,7 +702,7 @@ void App::HandlePanelAction( PanelAction action, double value )
 		return;
 	case A::EditBindings:
 		if ( !m_inputOk || !m_actions.OpenBindingEditor( kAppKey ) )
-			fprintf( stderr, "could not open the SteamVR binding editor\n" );
+			logging::Printf( "could not open the SteamVR binding editor\n" );
 		return;
 	case A::Raise:
 		if ( MoveAllowed() )
@@ -544,10 +742,10 @@ void App::RefreshBindings( double now )
 		return;
 	m_bindings = fresh;
 	m_panelDirty = true;
-	fprintf( stderr, "bindings:" );
+	std::string line = "bindings:";
 	for ( const auto &b : m_bindings )
-		fprintf( stderr, "  [%s = %s]", b.first.c_str(), b.second.c_str() );
-	fprintf( stderr, "\n" );
+		line += "  [" + b.first + " = " + b.second + "]";
+	logging::Printf( "%s\n", line.c_str() );
 }
 
 void App::RedrawPanel()
@@ -583,13 +781,13 @@ void App::RedrawPanel()
 							   : VROverlay()->SetOverlayRaw( m_panel, px.data(), kPanelW, kPanelH, 4 ) == VROverlayError_None;
 	if ( !ok )
 	{
-		fprintf( stderr, "panel upload failed: %s\n", err.c_str() );
+		logging::Printf( "panel upload failed: %s\n", err.c_str() );
 		m_panelDirty = true; // retry after the redraw interval even if no new UI event arrives
 		m_panelRetryAt = now + 0.25;
 		return;
 	}
 	if ( m_lastPanelPixels.empty() )
-		fprintf( stderr, "panel: first upload via %s\n", m_panelTex ? "Vulkan texture (SetOverlayTexture)" : "SetOverlayRaw (flickers)" );
+		logging::Printf( "panel: first upload via %s\n", m_panelTex ? "Vulkan texture (SetOverlayTexture)" : "SetOverlayRaw (flickers)" );
 	m_lastPanelPixels = std::move( px );
 }
 
@@ -628,7 +826,25 @@ int App::SelfTest()
 	else
 		check( false, ( "SteamVR Input: " + m_inputError ).c_str() );
 
-	Rebase();
+	// While the headset is not tracking SteamVR runs the dummy universe, which has no saved playspace: once a preview has
+	// been shown and hidden there, nothing can be reloaded until tracking resumes, and when it does, SteamVR stores whatever
+	// zero pose is live as the new universe's origin, our test move included. So only test while tracking.
+	if ( CurrentUniverse() == kDummyUniverse )
+	{
+		check( false, "the headset is tracking (it is in standby: put it on or wake it, then run the test again)" );
+		return 1;
+	}
+	// Like the main loop, retry while SteamVR has no working copy to give (it reloads the saved one for a moment after a
+	// preview is hidden or its owner exits).
+	const auto rebaseUntilReady = [this] {
+		Rebase();
+		for ( int i = 0; i < 20 && m_state != MoverState::Ready; i++ )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
+			Rebase();
+		}
+	};
+	rebaseUntilReady();
 	check( m_state == MoverState::Ready, "captured the saved playspace" );
 	if ( m_state != MoverState::Ready )
 		return 1;
@@ -681,7 +897,7 @@ int App::SelfTest()
 			"the live universe moved (preview is active)" );
 	}
 
-	Rebase();
+	rebaseUntilReady();
 	std::this_thread::sleep_for( std::chrono::milliseconds( 500 ) );
 	cs->GetWorkingStandingZeroPoseToRawTrackingPose( &workingStanding );
 	cs->GetWorkingSeatedZeroPoseToRawTrackingPose( &workingSeated );

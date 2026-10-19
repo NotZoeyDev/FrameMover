@@ -2,12 +2,15 @@
 
 #include "config.h"
 #include "files.h"
+#include "log.h"
 #include "vr_math.h"
 
 #include <openvr.h>
 
 #include <cstdio>
 #include <array>
+#include <chrono>
+#include <thread>
 #include <string>
 #include <unistd.h>
 
@@ -87,7 +90,7 @@ void Chaperone::RecoverSetting()
 	if ( value == "absent" || value == "0" || value == "1" )
 	{
 		PutDisableSetting( value );
-		fprintf( stderr, "put the SteamVR chaperone setting back after an earlier run did not exit cleanly\n" );
+		logging::Printf( "put the SteamVR chaperone setting back after an earlier run did not exit cleanly\n" );
 	}
 	unlink( RestoreFilePath().c_str() );
 }
@@ -117,14 +120,29 @@ void Chaperone::SetChaperoneDisabled( bool disabled )
 	}
 }
 
-bool Chaperone::Capture( Mat34 &standing, Mat34 &seated )
+bool Chaperone::Capture( Mat34 &standing, Mat34 &seated, bool keepSettingOverride )
 {
 	IVRChaperoneSetup *cs = VRChaperoneSetup();
 	if ( !cs )
 		return false;
 	if ( m_applied )
+	{
 		cs->HideWorkingSetPreview();
-	SetChaperoneDisabled( false );
+		// Hiding is processed asynchronously: a Revert right behind it can still read our own preview back as the "saved"
+		// playspace (zero poses and huge bounds included), and while SteamVR reloads the saved copy the working copy cannot
+		// be read at all (about 10 ms in a real universe, a second or more in the dummy one while the headset is not
+		// tracking). Wait until it reads back as something other than what we wrote; the caller retries after that.
+		for ( int i = 0; i < 100; i++ )
+		{
+			std::this_thread::sleep_for( std::chrono::milliseconds( 15 ) );
+			cs->RevertWorkingCopy();
+			HmdMatrix34_t st;
+			if ( cs->GetWorkingStandingZeroPoseToRawTrackingPose( &st ) && !SameAsWritten( st, m_lastStanding ) )
+				break;
+		}
+	}
+	if ( !keepSettingOverride )
+		SetChaperoneDisabled( false );
 	m_applied = false;
 	cs->RevertWorkingCopy();
 	HmdMatrix34_t st, se;
@@ -135,7 +153,9 @@ bool Chaperone::Capture( Mat34 &standing, Mat34 &seated )
 	m_boundsOverridden = false;
 	uint32_t quads = 0;
 	m_savedQuads.clear();
-	if ( cs->GetWorkingCollisionBoundsInfo( nullptr, &quads ) && quads > 0 )
+	// Asked for the count only (null buffer), SteamVR fills it in but returns false, so only the count says whether there are bounds.
+	cs->GetWorkingCollisionBoundsInfo( nullptr, &quads );
+	if ( quads > 0 )
 	{
 		m_savedQuads.resize( quads );
 		if ( !cs->GetWorkingCollisionBoundsInfo( m_savedQuads.data(), &quads ) )
@@ -146,6 +166,17 @@ bool Chaperone::Capture( Mat34 &standing, Mat34 &seated )
 	m_savedAreaX = m_savedAreaZ = 0;
 	cs->GetWorkingPlayAreaSize( &m_savedAreaX, &m_savedAreaZ );
 	return true;
+}
+
+// The editor's Accept, without changes: the saved playspace (walls and origins exactly where they are in the room) is
+// committed again, which makes SteamVR store it relative to the tracking map it uses now.
+bool Chaperone::Reanchor()
+{
+	IVRChaperoneSetup *cs = VRChaperoneSetup();
+	Mat34 standing, seated;
+	if ( !cs || !Capture( standing, seated, true ) )
+		return false;
+	return cs->CommitWorkingCopy( EChaperoneConfigFile_Live );
 }
 
 bool Chaperone::Apply( const Mat34 &standing, const Mat34 &seated, bool largeChaperone, bool disableChaperone )
@@ -177,6 +208,13 @@ bool Chaperone::Apply( const Mat34 &standing, const Mat34 &seated, bool largeCha
 	return true;
 }
 
+std::string Chaperone::SavedBoundsText() const
+{
+	char text[64];
+	snprintf( text, sizeof text, "play area %.2f x %.2f m, %zu wall quads", m_savedAreaX, m_savedAreaZ, m_savedQuads.size() );
+	return text;
+}
+
 void Chaperone::Restore()
 {
 	IVRChaperoneSetup *cs = VRChaperoneSetup();
@@ -206,4 +244,15 @@ bool Chaperone::ModifiedByOthers() const
 	if ( !cs->GetWorkingStandingZeroPoseToRawTrackingPose( &st ) || !cs->GetWorkingSeatedZeroPoseToRawTrackingPose( &se ) )
 		return false;
 	return !SameAsWritten( st, m_lastStanding ) || !SameAsWritten( se, m_lastSeated );
+}
+
+bool Chaperone::BoundsDropped() const
+{
+	if ( !m_applied || !m_boundsOverridden )
+		return false;
+	IVRChaperone *c = VRChaperone();
+	float x = 0, z = 0;
+	if ( !c || !c->GetPlayAreaSize( &x, &z ) )
+		return false; // no answer is not proof that it was dropped
+	return std::fabs( x - 2 * kHugeHalfSide ) > 1.0f || std::fabs( z - 2 * kHugeHalfSide ) > 1.0f;
 }

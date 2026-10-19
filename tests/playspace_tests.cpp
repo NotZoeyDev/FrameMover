@@ -206,6 +206,29 @@ static void TestRebaseDiscardsMovement()
 	CHECK( Near( ps.Standing().translation(), { 7, 8, 9 } ) );
 }
 
+// SteamVR relocalizes and hands us a new saved playspace: the user's move must still apply, to the new one.
+static void TestRebaselineKeepsMovement()
+{
+	Playspace ps = MakePlayspace();
+	ps.Translate( { 0.4, -0.7, 1.3 } );
+	ps.RotateAbout( { 0.2, 1.6, -0.5 }, 0.8 );
+	const Vec3 offset = ps.Offset();
+	const double yaw = ps.YawDegrees();
+	const Mat34 newStanding = YawedPose( -0.9, { 3, -1.4, 2 } ), newSeated = YawedPose( 0.3, { 2.5, -0.2, 2.2 } );
+	ps.Rebaseline( newStanding, newSeated );
+	CHECK( ps.Moved() );
+	CHECK( Near( ps.Offset(), offset ) && std::fabs( ps.YawDegrees() - yaw ) < 1e-9 );
+	CHECK( Near( ps.BaseStanding().translation(), newStanding.translation() ) );
+	const double a = yaw * M_PI / 180.0;
+	for ( Vec3 u : { Vec3{ 0, 0, 0 }, Vec3{ 1, 0.5, -2 }, Vec3{ -3, 1.8, 0.4 } } )
+	{
+		CHECK( Near( ToRaw( ps.Standing(), u ), RotateY( ToRaw( newStanding, u ), a ) + offset ) );
+		CHECK( Near( ToRaw( ps.Seated(), u ), RotateY( ToRaw( newSeated, u ), a ) + offset ) );
+	}
+	ps.Reset();
+	CHECK( Near( ps.Standing().translation(), newStanding.translation() ) ); // Reset goes back to the new baseline
+}
+
 static void TestRangeLimit()
 {
 	Playspace ps = MakePlayspace();
@@ -266,6 +289,25 @@ static void TestAfterDoublePressThirdPressIsAFirstPressAgain()
 	// but a tap after that, then a second press, works again
 	auto again = RunGate( { { 0.0, true }, { 0.1, false }, { 0.2, true }, { 0.3, false }, { 2.0, true }, { 2.1, false }, { 2.2, true }, { 2.6, true } } );
 	CHECK( again[6] && again[7] );
+}
+
+// SteamVR pinning the floor height (x, z, yaw ours, height replaced) must be told apart from any other replacement, because
+// only that one makes the mover re-anchor (commit) the saved playspace.
+static void TestOnlyHeightDiffersSeparatesPinnedFloorFromOtherReplacements()
+{
+	const Mat34 ours = YawedPose( 0.9, { 0.22, -1.26, 0.06 } );
+	Mat34 pinned = ours;
+	pinned.m[1][3] = -1.726; // the trace of 2026-10-19 18:20:41
+	CHECK( OnlyHeightDiffers( pinned, ours, 0.01, 0.01 ) );
+	CHECK( !OnlyHeightDiffers( ours, ours, 0.01, 0.01 ) ); // nothing differs: nothing to fix
+	Mat34 shifted = pinned;
+	shifted.m[2][3] += 0.05; // the whole saved pose came back, not only the floor
+	CHECK( !OnlyHeightDiffers( shifted, ours, 0.01, 0.01 ) );
+	Mat34 turned = YawedPose( 0.9 + 0.05, { 0.22, -1.726, 0.06 } );
+	CHECK( !OnlyHeightDiffers( turned, ours, 0.01, 0.01 ) );
+	Mat34 tiny = ours;
+	tiny.m[1][3] += 0.005; // below the tolerance: float noise, not pinning
+	CHECK( !OnlyHeightDiffers( tiny, ours, 0.01, 0.01 ) );
 }
 
 // The live zero pose recovered from a device's raw and universe poses equals the zero pose that produced them, which is how
@@ -360,6 +402,8 @@ int main()
 	TestRotateAboutPivotComposesWithDrag();
 	TestResetRestoresOriginalExactly();
 	TestRebaseDiscardsMovement();
+	TestRebaselineKeepsMovement();
+	TestOnlyHeightDiffersSeparatesPinnedFloorFromOtherReplacements();
 	TestRangeLimit();
 	if ( g_failures )
 	{

@@ -21,6 +21,19 @@ inline constexpr struct
 	{ "/actions/playspace/out/haptic", nullptr },
 };
 
+// SteamVR remembers the bindings a user saved from its editor as a Steam Workshop item, "vr-input-workshop://<item id>".
+// Returns the item id, or "" when `url` is anything else (empty, a file:// url, a malformed id).
+inline std::string WorkshopItemId( std::string_view url )
+{
+	constexpr std::string_view prefix = "vr-input-workshop://";
+	if ( url.substr( 0, prefix.size() ) != prefix )
+		return "";
+	url.remove_prefix( prefix.size() );
+	if ( url.empty() || url.find_first_not_of( "0123456789" ) != std::string_view::npos )
+		return "";
+	return std::string( url );
+}
+
 inline void AppendName( std::string &list, std::string_view name )
 {
 	if ( !list.empty() )
