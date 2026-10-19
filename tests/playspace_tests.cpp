@@ -297,7 +297,7 @@ static void TestOnlyHeightDiffersSeparatesPinnedFloorFromOtherReplacements()
 {
 	const Mat34 ours = YawedPose( 0.9, { 0.22, -1.26, 0.06 } );
 	Mat34 pinned = ours;
-	pinned.m[1][3] = -1.726; // the trace of 2026-10-19 18:20:41
+	pinned.m[1][3] = -1.726; // the saved floor SteamVR forced on the device on 2026-10-19
 	CHECK( OnlyHeightDiffers( pinned, ours, 0.01, 0.01 ) );
 	CHECK( !OnlyHeightDiffers( ours, ours, 0.01, 0.01 ) ); // nothing differs: nothing to fix
 	Mat34 shifted = pinned;

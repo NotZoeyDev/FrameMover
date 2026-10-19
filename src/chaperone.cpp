@@ -2,7 +2,6 @@
 
 #include "config.h"
 #include "files.h"
-#include "log.h"
 #include "vr_math.h"
 
 #include <openvr.h>
@@ -90,7 +89,7 @@ void Chaperone::RecoverSetting()
 	if ( value == "absent" || value == "0" || value == "1" )
 	{
 		PutDisableSetting( value );
-		logging::Printf( "put the SteamVR chaperone setting back after an earlier run did not exit cleanly\n" );
+		fprintf( stderr, "put the SteamVR chaperone setting back after an earlier run did not exit cleanly\n" );
 	}
 	unlink( RestoreFilePath().c_str() );
 }
@@ -206,13 +205,6 @@ bool Chaperone::Apply( const Mat34 &standing, const Mat34 &seated, bool largeCha
 	m_lastStanding = standing;
 	m_lastSeated = seated;
 	return true;
-}
-
-std::string Chaperone::SavedBoundsText() const
-{
-	char text[64];
-	snprintf( text, sizeof text, "play area %.2f x %.2f m, %zu wall quads", m_savedAreaX, m_savedAreaZ, m_savedQuads.size() );
-	return text;
 }
 
 void Chaperone::Restore()

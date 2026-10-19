@@ -35,8 +35,6 @@ public:
 	// bounds included, even when the zero pose happens to look right.
 	bool BoundsDropped() const;
 	bool PreviewShown() const { return m_applied; }
-	// "play area 1.00 x 1.00 m, 4 wall quads": what Capture() found (a floor-only playspace has the 1 x 1 m placeholder).
-	std::string SavedBoundsText() const;
 
 private:
 	bool m_applied = false;

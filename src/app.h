@@ -47,11 +47,8 @@ private:
 	void CheckUniverse();                 // a universe switch silently drops our preview and makes the captured playspace stale
 	void ApplyIfChanged();
 	void CheckLivePreview( double now ); // is SteamVR still using the playspace we applied? re-apply if it silently dropped it
-	bool LiveStanding( Mat34 &out ) const;      // the standing zero pose SteamVR really uses, from the headset's poses
-	void LogBaseline( const char *what ) const; // universe, captured base vs live, saved bounds
-	void StartTrace( double now );              // log live vs ours at 20 Hz for a moment
-	void Trace( double now );
-	void Reanchor( double now );                // re-anchor the saved playspace to the current tracking map (see app.cpp)
+	bool LiveStanding( Mat34 &out ) const; // the standing zero pose SteamVR really uses, from the headset's poses
+	void Reanchor( double now );           // re-anchor the saved playspace to the current tracking map (see app.cpp)
 	void Pause( bool restore );
 	void Pulse( bool bothHands );
 
@@ -99,7 +96,6 @@ private:
 	std::vector<double> m_healTimes; // recent self-repairs, for the back-off
 	double m_healBackoffUntil = 0;
 	double m_lastApply = -10; // when we last wrote a preview; used to tell our own echo events from outside changes
-	double m_traceStart = 0, m_traceUntil = -1, m_nextTrace = 0; // diagnostics trace window
 	bool m_reanchorTried = false; // re-anchored once in this tracking world already
 	double m_reanchoredAt = -10;  // when; commit events right after it are our own echo
 

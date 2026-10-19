@@ -1,7 +1,6 @@
 #include "app.h"
 #include "backup.h"
 #include "files.h"
-#include "log.h"
 #include "vr_math.h"
 
 #include <unistd.h>
@@ -31,20 +30,6 @@ constexpr uint64_t kDummyUniverse = 424242;
 double Now()
 {
 	return std::chrono::duration<double>( std::chrono::steady_clock::now().time_since_epoch() ).count();
-}
-
-constexpr double kTraceSeconds = 1.5;
-
-double YawOf( const Mat34 &m )
-{
-	return std::atan2( m.m[0][2], m.m[2][2] ) / kDegToRad;
-}
-
-std::string PoseText( const Mat34 &m )
-{
-	char text[80];
-	snprintf( text, sizeof text, "(%.3f %.3f %.3f yaw %.1f)", m.m[0][3], m.m[1][3], m.m[2][3], YawOf( m ) );
-	return text;
 }
 } // namespace
 
@@ -104,7 +89,7 @@ bool App::Init( std::string &error )
 	const std::string manifest = FindDataDir() + "/action_manifest.json";
 	m_inputOk = m_actions.Init( manifest, m_settings.overrideGameInput, m_inputError );
 	if ( !m_inputOk )
-		logging::Printf( "SteamVR Input unavailable: %s\n", m_inputError.c_str() );
+		fprintf( stderr, "SteamVR Input unavailable: %s\n", m_inputError.c_str() );
 
 	EVROverlayError oe = VROverlay()->CreateDashboardOverlay( kPanelKey, "FrameMover", &m_panel, &m_thumb );
 	if ( oe != VROverlayError_None )
@@ -135,7 +120,7 @@ bool App::Init( std::string &error )
 		m_panelTex = std::make_unique<OverlayTexture>( *m_vk );
 	else
 	{
-		logging::Printf( "Vulkan setup failed (%s); the panel will flicker (SetOverlayRaw fallback)\n", vkErr.c_str() );
+		fprintf( stderr, "Vulkan setup failed (%s); the panel will flicker (SetOverlayRaw fallback)\n", vkErr.c_str() );
 		m_vk.reset();
 	}
 
@@ -161,7 +146,6 @@ void App::Rebase()
 	{
 		m_playspace.Rebase( standing, seated );
 		m_state = MoverState::Ready;
-		LogBaseline( "captured the saved playspace" );
 	}
 	else
 		m_state = MoverState::WaitingForChaperone;
@@ -188,7 +172,6 @@ void App::Rebaseline()
 	{
 		m_playspace.Rebaseline( standing, seated );
 		m_state = MoverState::Ready;
-		LogBaseline( "kept the move on the new saved playspace" );
 	}
 	else
 	{
@@ -227,7 +210,7 @@ void App::CheckUniverse()
 	// same any more, so a move made in the old one means nothing. Switching between real universes (relocalizing against a
 	// saved map) keeps raw space, so the move survives.
 	const bool newWorld = id == kDummyUniverse || previous == kDummyUniverse;
-	logging::Printf( "tracking universe %llu -> %llu%s\n", (unsigned long long)previous, (unsigned long long)id,
+	fprintf( stderr, "tracking universe %llu -> %llu%s\n", (unsigned long long)previous, (unsigned long long)id,
 		newWorld ? " (tracking world changed: dropping the move)" : "" );
 	if ( newWorld )
 		m_reanchorTried = false; // the next relocalization may need it again
@@ -258,11 +241,10 @@ void App::ApplyIfChanged()
 	}
 	if ( !m_playspace.InRange() )
 	{
-		logging::Printf( "playspace moved out of the range OpenVR accepts; resetting to the original\n" );
+		fprintf( stderr, "playspace moved out of the range OpenVR accepts; resetting to the original\n" );
 		Rebase();
 		return;
 	}
-	const bool starting = !m_chaperone.PreviewShown();
 	if ( m_chaperone.Apply( m_playspace.Standing(), m_playspace.Seated(), m_settings.largeChaperone, m_settings.disableChaperone ) )
 	{
 		m_appliedAny = true;
@@ -270,12 +252,6 @@ void App::ApplyIfChanged()
 		m_appliedYaw = yaw;
 		m_lastApply = Now();
 		m_panelDirty = true;
-		if ( starting )
-		{
-			logging::Printf( "move started: ours %s, offset %.3f %.3f %.3f, yaw %.1f\n", PoseText( m_playspace.Standing() ).c_str(), off.x, off.y,
-				off.z, yaw );
-			StartTrace( m_lastApply );
-		}
 	}
 }
 
@@ -297,9 +273,8 @@ void App::CheckLivePreview( double now )
 		return;
 
 	const bool others = m_chaperone.ModifiedByOthers();
-	logging::Printf( "live playspace differs from ours %.1f s after our last write (%s; live %s, ours %s, working copy %s ours, saved original %s)\n",
-		now - m_lastApply, poseDiffers ? ( boundsDropped ? "zero pose and play area" : "zero pose" ) : "play area", PoseText( live ).c_str(),
-		PoseText( want ).c_str(), others ? "NOT" : "still", PoseText( m_playspace.BaseStanding() ).c_str() );
+	fprintf( stderr, "live playspace differs from ours %.1f s after our last write (%s, working copy %s ours)\n", now - m_lastApply,
+		poseDiffers ? ( boundsDropped ? "zero pose and play area" : "zero pose" ) : "play area", others ? "NOT" : "still" );
 	if ( others )
 		return; // someone else edited the working copy: the existing "another program" path handles that
 	if ( poseDiffers && OnlyHeightDiffers( live, want, 0.01, 0.01 ) && !m_reanchorTried )
@@ -312,15 +287,14 @@ void App::CheckLivePreview( double now )
 	{
 		m_healBackoffUntil = now + 30.0;
 		m_healTimes.clear();
-		logging::Printf( "SteamVR keeps replacing the playspace; not re-applying for 30 s\n" );
+		fprintf( stderr, "SteamVR keeps replacing the playspace; not re-applying for 30 s\n" );
 		return;
 	}
 	m_healTimes.push_back( now );
 	if ( m_chaperone.Apply( m_playspace.Standing(), m_playspace.Seated(), m_settings.largeChaperone, m_settings.disableChaperone ) )
 	{
 		m_lastApply = now;
-		logging::Printf( "re-applied the playspace SteamVR had dropped\n" );
-		StartTrace( now );
+		fprintf( stderr, "re-applied the playspace SteamVR had dropped\n" );
 	}
 }
 
@@ -331,18 +305,17 @@ void App::CheckLivePreview( double now )
 void App::Reanchor( double now )
 {
 	m_reanchorTried = true;
-	logging::Printf( "SteamVR is holding the floor height of a playspace anchored to an older tracking map; re-anchoring it to the current "
-					 "map (saved playspace committed unchanged, like Accept in SteamVR's playspace setup)\n" );
+	fprintf( stderr, "SteamVR is holding the floor height of a playspace anchored to an older tracking map; re-anchoring it to the current map\n" );
 	const std::string backups = BackupChaperoneFile(); // the file is about to be written: keep what it was
 	if ( backups.empty() )
 	{
-		logging::Printf( "could not back up chaperone_info.vrchap; not re-anchoring\n" );
+		fprintf( stderr, "could not back up chaperone_info.vrchap; not re-anchoring\n" );
 		return;
 	}
 	const bool ok = m_chaperone.Reanchor();
 	m_appliedAny = false; // the preview is down either way: the move is written again after the rebase
 	m_reanchoredAt = now;
-	logging::Printf( "%s\n", ok ? "re-anchored; putting the move back on top" : "SteamVR rejected the commit; putting the move back" );
+	fprintf( stderr, "%s\n", ok ? "re-anchored; putting the move back on top" : "SteamVR rejected the commit; putting the move back" );
 	ScheduleRebase( false );
 }
 
@@ -356,38 +329,6 @@ bool App::LiveStanding( Mat34 &out ) const
 		return false;
 	out = ZeroPoseFromPoses( MatrixCast<Mat34>( r.mDeviceToAbsoluteTracking ), MatrixCast<Mat34>( s.mDeviceToAbsoluteTracking ) );
 	return true;
-}
-
-void App::LogBaseline( const char *what ) const
-{
-	Mat34 live;
-	const bool tracking = LiveStanding( live );
-	logging::Printf( "%s in universe %llu: base %s, SteamVR live %s, %s\n", what, (unsigned long long)CurrentUniverse(),
-		PoseText( m_playspace.BaseStanding() ).c_str(), tracking ? PoseText( live ).c_str() : "(not tracking)", m_chaperone.SavedBoundsText().c_str() );
-}
-
-// Diagnostics: what SteamVR really uses, 20 times a second for a moment after we wrote a move.
-void App::StartTrace( double now )
-{
-	m_traceStart = now;
-	m_traceUntil = now + kTraceSeconds;
-	m_nextTrace = now;
-}
-
-void App::Trace( double now )
-{
-	if ( now >= m_traceUntil || now < m_nextTrace )
-		return;
-	m_nextTrace = now + 0.05;
-	Mat34 live;
-	if ( !LiveStanding( live ) )
-	{
-		logging::Printf( "  trace +%.2f s: not tracking\n", now - m_traceStart );
-		return;
-	}
-	const Mat34 want = m_playspace.Standing();
-	logging::Printf( "  trace +%.2f s: live %s, ours %s, diff x %+.3f y %+.3f z %+.3f yaw %+.1f\n", now - m_traceStart, PoseText( live ).c_str(),
-		PoseText( want ).c_str(), live.m[0][3] - want.m[0][3], live.m[1][3] - want.m[1][3], live.m[2][3] - want.m[2][3], YawOf( live ) - YawOf( want ) );
 }
 
 void App::Pulse( bool bothHands )
@@ -445,7 +386,7 @@ void App::HandleSystemEvent( const VREvent_t &ev )
 		}
 		// The user recentered or finished room setup: whatever we held is stale and so is the move. Adopt the new
 		// playspace as the original once the burst of events is over.
-		logging::Printf( "playspace changed outside the mover (%s); adopting it as the new original\n",
+		fprintf( stderr, "playspace changed outside the mover (%s); adopting it as the new original\n",
 			VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
 		ScheduleRebase( true );
 		break;
@@ -453,7 +394,7 @@ void App::HandleSystemEvent( const VREvent_t &ev )
 	case VREvent_ChaperoneDataHasChanged:
 		// SteamVR relocalized against a saved map or reloaded the chaperone: the saved playspace is new, but the user did
 		// not ask for that, so their move stays.
-		logging::Printf( "SteamVR switched the saved playspace (%s)\n", VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
+		fprintf( stderr, "SteamVR switched the saved playspace (%s)\n", VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
 		ScheduleRebase( false );
 		break;
 	case VREvent_ChaperoneFlushCache:
@@ -462,7 +403,7 @@ void App::HandleSystemEvent( const VREvent_t &ev )
 	case VREvent_ActionBindingReloaded:
 	case VREvent_Input_BindingLoadSuccessful:
 	case VREvent_Input_ActionManifestReloaded:
-		logging::Printf( "SteamVR reloaded the bindings (%s)\n", VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
+		fprintf( stderr, "SteamVR reloaded the bindings (%s)\n", VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
 		m_bindingsStale = true; // the user changed the bindings in SteamVR: re-read them
 		m_pinBindingsAt = Now() + 1.5; // and if they were saved just now, keep a local copy so a later start never needs Steam for them
 		break;
@@ -541,7 +482,7 @@ void App::Tick()
 	PollEvents();
 	if ( s_showDashboard.exchange( false ) )
 	{
-		logging::Printf( "second launch (quick-launch tile): showing the dashboard tab\n" );
+		fprintf( stderr, "second launch (quick-launch tile): showing the dashboard tab\n" );
 		ShowDashboardPanel();
 	}
 	if ( now >= m_nextUniverseCheck )
@@ -549,7 +490,6 @@ void App::Tick()
 		m_nextUniverseCheck = now + 0.25;
 		CheckUniverse();
 	}
-	Trace( now );
 	if ( m_rebaseAt >= 0 && now >= m_rebaseAt )
 	{
 		if ( m_rebaseDropsMove )
@@ -653,7 +593,7 @@ void App::Tick()
 			if ( m_chaperone.ModifiedByOthers() )
 			{
 				// Not stuck for good: whatever the other program was doing, look at the saved playspace again shortly.
-				logging::Printf( "another program changed the chaperone working copy; pausing for %.0f s\n", kResumeAfterPause );
+				fprintf( stderr, "another program changed the chaperone working copy; pausing for %.0f s\n", kResumeAfterPause );
 				Pause( false );
 				m_rebaseAt = now + kResumeAfterPause;
 				m_rebaseDropsMove = true;
@@ -702,7 +642,7 @@ void App::HandlePanelAction( PanelAction action, double value )
 		return;
 	case A::EditBindings:
 		if ( !m_inputOk || !m_actions.OpenBindingEditor( kAppKey ) )
-			logging::Printf( "could not open the SteamVR binding editor\n" );
+			fprintf( stderr, "could not open the SteamVR binding editor\n" );
 		return;
 	case A::Raise:
 		if ( MoveAllowed() )
@@ -745,7 +685,7 @@ void App::RefreshBindings( double now )
 	std::string line = "bindings:";
 	for ( const auto &b : m_bindings )
 		line += "  [" + b.first + " = " + b.second + "]";
-	logging::Printf( "%s\n", line.c_str() );
+	fprintf( stderr, "%s\n", line.c_str() );
 }
 
 void App::RedrawPanel()
@@ -781,13 +721,13 @@ void App::RedrawPanel()
 							   : VROverlay()->SetOverlayRaw( m_panel, px.data(), kPanelW, kPanelH, 4 ) == VROverlayError_None;
 	if ( !ok )
 	{
-		logging::Printf( "panel upload failed: %s\n", err.c_str() );
+		fprintf( stderr, "panel upload failed: %s\n", err.c_str() );
 		m_panelDirty = true; // retry after the redraw interval even if no new UI event arrives
 		m_panelRetryAt = now + 0.25;
 		return;
 	}
 	if ( m_lastPanelPixels.empty() )
-		logging::Printf( "panel: first upload via %s\n", m_panelTex ? "Vulkan texture (SetOverlayTexture)" : "SetOverlayRaw (flickers)" );
+		fprintf( stderr, "panel: first upload via %s\n", m_panelTex ? "Vulkan texture (SetOverlayTexture)" : "SetOverlayRaw (flickers)" );
 	m_lastPanelPixels = std::move( px );
 }
 
