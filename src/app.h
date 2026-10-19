@@ -42,7 +42,7 @@ private:
 
 	void Rebase();            // adopt SteamVR's current saved playspace as "original", dropping any move
 	void Rebaseline();        // adopt it as the baseline but keep the move the user made on top of it
-	void ScheduleRebase( bool dropMove ); // debounced Rebase()/Rebaseline() once a burst of events is over
+	void ScheduleRebase( bool dropMove, const char *why ); // debounced Rebase()/Rebaseline() once a burst of events is over
 	uint64_t CurrentUniverse() const;     // the tracking universe SteamVR is using, 0 if unknown
 	void CheckUniverse();                 // a universe switch silently drops our preview and makes the captured playspace stale
 	void ApplyIfChanged();
@@ -82,6 +82,7 @@ private:
 	double m_lastTick = 0;
 	double m_rebaseAt = -1;       // pending debounced rebase, or -1
 	bool m_rebaseDropsMove = false; // some pending trigger means the move must go (new original), not just be re-based
+	std::string m_rebaseWhy;      // what triggered the pending rebase, for the log
 	uint64_t m_universe = 0;      // the tracking universe seen last
 	double m_nextUniverseCheck = 0;
 	double m_pinBindingsAt = -1;  // when to re-pin the saved bindings after SteamVR reloaded them, or -1

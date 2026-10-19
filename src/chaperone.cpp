@@ -2,6 +2,7 @@
 
 #include "config.h"
 #include "files.h"
+#include "log.h"
 #include "vr_math.h"
 
 #include <openvr.h>
@@ -89,7 +90,7 @@ void Chaperone::RecoverSetting()
 	if ( value == "absent" || value == "0" || value == "1" )
 	{
 		PutDisableSetting( value );
-		fprintf( stderr, "put the SteamVR chaperone setting back after an earlier run did not exit cleanly\n" );
+		logging::Printf( "put the SteamVR chaperone setting back after an earlier run did not exit cleanly\n" );
 	}
 	unlink( RestoreFilePath().c_str() );
 }

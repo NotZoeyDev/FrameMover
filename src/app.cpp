@@ -1,6 +1,7 @@
 #include "app.h"
 #include "backup.h"
 #include "files.h"
+#include "log.h"
 #include "vr_math.h"
 
 #include <unistd.h>
@@ -89,7 +90,7 @@ bool App::Init( std::string &error )
 	const std::string manifest = FindDataDir() + "/action_manifest.json";
 	m_inputOk = m_actions.Init( manifest, m_settings.overrideGameInput, m_inputError );
 	if ( !m_inputOk )
-		fprintf( stderr, "SteamVR Input unavailable: %s\n", m_inputError.c_str() );
+		logging::Printf( "SteamVR Input unavailable: %s\n", m_inputError.c_str() );
 
 	EVROverlayError oe = VROverlay()->CreateDashboardOverlay( kPanelKey, "FrameMover", &m_panel, &m_thumb );
 	if ( oe != VROverlayError_None )
@@ -120,7 +121,7 @@ bool App::Init( std::string &error )
 		m_panelTex = std::make_unique<OverlayTexture>( *m_vk );
 	else
 	{
-		fprintf( stderr, "Vulkan setup failed (%s); the panel will flicker (SetOverlayRaw fallback)\n", vkErr.c_str() );
+		logging::Printf( "Vulkan setup failed (%s); the panel will flicker\n", vkErr.c_str() );
 		m_vk.reset();
 	}
 
@@ -136,6 +137,7 @@ void App::Rebase()
 {
 	m_rebaseAt = -1;
 	m_rebaseDropsMove = false;
+	m_rebaseWhy.clear();
 	for ( int h = 0; h < 2; h++ )
 	{
 		m_drag[h] = DragGesture();
@@ -167,6 +169,7 @@ void App::Rebaseline()
 	}
 	m_rebaseAt = -1;
 	m_rebaseDropsMove = false;
+	m_rebaseWhy.clear();
 	Mat34 standing, seated;
 	if ( m_chaperone.Capture( standing, seated, true ) )
 	{
@@ -182,9 +185,11 @@ void App::Rebaseline()
 	m_panelDirty = true;
 }
 
-void App::ScheduleRebase( bool dropMove )
+void App::ScheduleRebase( bool dropMove, const char *why )
 {
 	m_rebaseAt = Now() + kRebaseDebounce;
+	if ( m_rebaseWhy.empty() || ( dropMove && !m_rebaseDropsMove ) )
+		m_rebaseWhy = why; // what the log line names: the first trigger, or the one that drops the move
 	m_rebaseDropsMove = m_rebaseDropsMove || dropMove;
 }
 
@@ -210,11 +215,10 @@ void App::CheckUniverse()
 	// same any more, so a move made in the old one means nothing. Switching between real universes (relocalizing against a
 	// saved map) keeps raw space, so the move survives.
 	const bool newWorld = id == kDummyUniverse || previous == kDummyUniverse;
-	fprintf( stderr, "tracking universe %llu -> %llu%s\n", (unsigned long long)previous, (unsigned long long)id,
-		newWorld ? " (tracking world changed: dropping the move)" : "" );
+	logging::Printf( "tracking universe %llu -> %llu\n", (unsigned long long)previous, (unsigned long long)id );
 	if ( newWorld )
 		m_reanchorTried = false; // the next relocalization may need it again
-	ScheduleRebase( newWorld );
+	ScheduleRebase( newWorld, newWorld ? "new tracking world" : "tracking universe switched" );
 }
 
 void App::Pause( bool restore )
@@ -241,7 +245,7 @@ void App::ApplyIfChanged()
 	}
 	if ( !m_playspace.InRange() )
 	{
-		fprintf( stderr, "playspace moved out of the range OpenVR accepts; resetting to the original\n" );
+		logging::Printf( "playspace moved out of the range OpenVR accepts; resetting to the original\n" );
 		Rebase();
 		return;
 	}
@@ -273,8 +277,8 @@ void App::CheckLivePreview( double now )
 		return;
 
 	const bool others = m_chaperone.ModifiedByOthers();
-	fprintf( stderr, "live playspace differs from ours %.1f s after our last write (%s, working copy %s ours)\n", now - m_lastApply,
-		poseDiffers ? ( boundsDropped ? "zero pose and play area" : "zero pose" ) : "play area", others ? "NOT" : "still" );
+	logging::Printf( "SteamVR replaced the %s %.1f s after our last write (working copy %s ours)\n",
+		poseDiffers ? ( boundsDropped ? "zero pose and play area" : "zero pose" ) : "play area", now - m_lastApply, others ? "NOT" : "still" );
 	if ( others )
 		return; // someone else edited the working copy: the existing "another program" path handles that
 	if ( poseDiffers && OnlyHeightDiffers( live, want, 0.01, 0.01 ) && !m_reanchorTried )
@@ -287,14 +291,14 @@ void App::CheckLivePreview( double now )
 	{
 		m_healBackoffUntil = now + 30.0;
 		m_healTimes.clear();
-		fprintf( stderr, "SteamVR keeps replacing the playspace; not re-applying for 30 s\n" );
+		logging::Printf( "SteamVR keeps replacing the playspace; not re-applying for 30 s\n" );
 		return;
 	}
 	m_healTimes.push_back( now );
 	if ( m_chaperone.Apply( m_playspace.Standing(), m_playspace.Seated(), m_settings.largeChaperone, m_settings.disableChaperone ) )
 	{
 		m_lastApply = now;
-		fprintf( stderr, "re-applied the playspace SteamVR had dropped\n" );
+		logging::Printf( "re-applied the playspace\n" );
 	}
 }
 
@@ -305,18 +309,18 @@ void App::CheckLivePreview( double now )
 void App::Reanchor( double now )
 {
 	m_reanchorTried = true;
-	fprintf( stderr, "SteamVR is holding the floor height of a playspace anchored to an older tracking map; re-anchoring it to the current map\n" );
+	logging::Printf( "SteamVR is holding the floor height of a playspace anchored to an older tracking map; re-anchoring it\n" );
 	const std::string backups = BackupChaperoneFile(); // the file is about to be written: keep what it was
 	if ( backups.empty() )
 	{
-		fprintf( stderr, "could not back up chaperone_info.vrchap; not re-anchoring\n" );
+		logging::Printf( "could not back up chaperone_info.vrchap; not re-anchoring\n" );
 		return;
 	}
 	const bool ok = m_chaperone.Reanchor();
 	m_appliedAny = false; // the preview is down either way: the move is written again after the rebase
 	m_reanchoredAt = now;
-	fprintf( stderr, "%s\n", ok ? "re-anchored; putting the move back on top" : "SteamVR rejected the commit; putting the move back" );
-	ScheduleRebase( false );
+	logging::Printf( "%s\n", ok ? "re-anchored; putting the move back" : "SteamVR rejected the commit; putting the move back" );
+	ScheduleRebase( false, "our re-anchor" );
 }
 
 bool App::LiveStanding( Mat34 &out ) const
@@ -381,21 +385,18 @@ void App::HandleSystemEvent( const VREvent_t &ev )
 		if ( Now() - m_reanchoredAt < kReanchorEcho )
 		{
 			// Our own commit announces itself like a finished room setup; the move stays.
-			ScheduleRebase( false );
+			ScheduleRebase( false, "our re-anchor" );
 			break;
 		}
 		// The user recentered or finished room setup: whatever we held is stale and so is the move. Adopt the new
 		// playspace as the original once the burst of events is over.
-		fprintf( stderr, "playspace changed outside the mover (%s); adopting it as the new original\n",
-			VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
-		ScheduleRebase( true );
+		ScheduleRebase( true, VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
 		break;
 	case VREvent_ChaperoneUniverseHasChanged:
 	case VREvent_ChaperoneDataHasChanged:
 		// SteamVR relocalized against a saved map or reloaded the chaperone: the saved playspace is new, but the user did
 		// not ask for that, so their move stays.
-		fprintf( stderr, "SteamVR switched the saved playspace (%s)\n", VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
-		ScheduleRebase( false );
+		ScheduleRebase( false, VRSystem()->GetEventTypeNameFromEnum( (EVREventType)ev.eventType ) );
 		break;
 	case VREvent_ChaperoneFlushCache:
 		m_nextUniverseCheck = 0; // how a new tracking universe announces itself on the Frame: read the universe id now
@@ -492,6 +493,8 @@ void App::Tick()
 	}
 	if ( m_rebaseAt >= 0 && now >= m_rebaseAt )
 	{
+		if ( m_playspace.Moved() && !m_rebaseWhy.empty() )
+			logging::Printf( "%s: %s\n", m_rebaseWhy.c_str(), m_rebaseDropsMove ? "new original, move dropped" : "move kept on the new saved playspace" );
 		if ( m_rebaseDropsMove )
 			Rebase();
 		else
@@ -593,7 +596,7 @@ void App::Tick()
 			if ( m_chaperone.ModifiedByOthers() )
 			{
 				// Not stuck for good: whatever the other program was doing, look at the saved playspace again shortly.
-				fprintf( stderr, "another program changed the chaperone working copy; pausing for %.0f s\n", kResumeAfterPause );
+				logging::Printf( "another program changed the chaperone working copy; pausing for %.0f s\n", kResumeAfterPause );
 				Pause( false );
 				m_rebaseAt = now + kResumeAfterPause;
 				m_rebaseDropsMove = true;
@@ -642,7 +645,7 @@ void App::HandlePanelAction( PanelAction action, double value )
 		return;
 	case A::EditBindings:
 		if ( !m_inputOk || !m_actions.OpenBindingEditor( kAppKey ) )
-			fprintf( stderr, "could not open the SteamVR binding editor\n" );
+			logging::Printf( "could not open the SteamVR binding editor\n" );
 		return;
 	case A::Raise:
 		if ( MoveAllowed() )

@@ -2,6 +2,7 @@
 #include "bindings.h"
 #include "config.h"
 #include "files.h"
+#include "log.h"
 
 #include <openvr.h>
 
@@ -95,7 +96,7 @@ void Actions::PinUserBindings()
 	std::string json;
 	if ( !ReadWorkshopBinding( item, json ) )
 	{
-		fprintf( stderr, "saved bindings are workshop item %s but it is not on disk; leaving SteamVR's setting alone\n", item.c_str() );
+		logging::Printf( "saved bindings are workshop item %s but it is not on disk; leaving SteamVR's setting alone\n", item.c_str() );
 		return;
 	}
 	const std::string path = PinnedBindingPath();
@@ -106,12 +107,12 @@ void Actions::PinUserBindings()
 		const std::string temp = path + ".tmp";
 		if ( !files::WriteFile( temp, json ) || std::rename( temp.c_str(), path.c_str() ) != 0 )
 		{
-			fprintf( stderr, "could not write %s\n", path.c_str() );
+			logging::Printf( "could not write %s\n", path.c_str() );
 			return;
 		}
 	}
 	st->SetString( kAppKey, kCurrentUrlKey, ( "file://" + path ).c_str(), &err );
-	fprintf( stderr, "pinned the saved bindings (workshop item %s) to %s: %s\n", item.c_str(), path.c_str(), st->GetSettingsErrorNameFromEnum( err ) );
+	logging::Printf( "pinned the saved bindings (workshop item %s) to a local copy: %s\n", item.c_str(), st->GetSettingsErrorNameFromEnum( err ) );
 }
 
 bool Actions::Init( const std::string &manifestPath, bool overrideGameInput, std::string &error )
