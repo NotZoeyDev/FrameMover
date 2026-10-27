@@ -36,6 +36,7 @@ add_executable(frame-mover
   src/backup.cpp
   src/chaperone.cpp
   src/config.cpp
+  src/i18n.cpp
   src/install.cpp
   src/panel.cpp
   src/ui.cpp
@@ -69,11 +70,12 @@ endif()
 
 # Unit tests (no SteamVR needed): ctest --test-dir build --output-on-failure
 if(BUILD_TESTING)
-  foreach(test playspace pixel bindings panel_action config)
+  foreach(test playspace pixel bindings panel_action config i18n)
     add_executable(${test}_tests tests/${test}_tests.cpp)
     target_link_libraries(${test}_tests PRIVATE playspace)
     add_test(NAME ${test} COMMAND ${test}_tests)
   endforeach()
   target_sources(config_tests PRIVATE src/config.cpp)
+  target_sources(i18n_tests PRIVATE src/i18n.cpp src/config.cpp)
   set_tests_properties(bindings PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()

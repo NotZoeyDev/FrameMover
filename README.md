@@ -41,6 +41,12 @@ SteamVR's developer setting "Experimental overlay input overrides".
 The dashboard tab also has Reset, raise / lower / turn buttons, grab speed, snap angle, raise speed, lock height, per-hand enable and
 haptics. Settings are stored in `~/.config/frame-mover/config.ini`.
 
+## Language
+
+The panel and the SteamVR binding names are available in English and Japanese. The language follows the Steam client's language,
+then `$LC_ALL` / `$LANG`; English is used when neither says Japanese. To force one, set `FRAME_MOVER_LANG=ja|en` or write `ja` or `en`
+into `~/.config/frame-mover/lang`. The UI strings are in `src/i18n.cpp` (Japanese uses Noto Sans CJK JP, which the Frame ships).
+
 ## Quick-launch tile
 
 `--install` adds FrameMover to SteamVR's quick-launch bar and the Frame's app launcher, and starts it with SteamVR. Pressing the
