@@ -6,8 +6,8 @@
 
 namespace
 {
-// Noto Sans CJK JP carries the Latin glyphs too; cairo's toy API does not fall back per glyph.
-const char *FontFamily() { return i18n::Japanese() ? "Noto Sans CJK JP" : "Noto Sans"; }
+// `font` overrides the UI language's font (the language menu shows every language in its own script).
+const char *FontFamily( const char *font ) { return font ? font : i18n::Current().font; }
 } // namespace
 
 Canvas::Canvas( int width, int height ) : m_w( width ), m_h( height )
@@ -40,18 +40,18 @@ void Canvas::RoundRect( double x, double y, double w, double h, double radius, d
 	cairo_fill( m_cr );
 }
 
-void Canvas::Text( const std::string &s, double x, double y, double size, double r, double g, double b, bool bold )
+void Canvas::Text( const std::string &s, double x, double y, double size, double r, double g, double b, bool bold, const char *font )
 {
-	cairo_select_font_face( m_cr, FontFamily(), CAIRO_FONT_SLANT_NORMAL, bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL );
+	cairo_select_font_face( m_cr, FontFamily( font ), CAIRO_FONT_SLANT_NORMAL, bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL );
 	cairo_set_font_size( m_cr, size );
 	cairo_set_source_rgb( m_cr, r, g, b );
 	cairo_move_to( m_cr, x, y );
 	cairo_show_text( m_cr, s.c_str() );
 }
 
-double Canvas::TextWidth( const std::string &s, double size, bool bold )
+double Canvas::TextWidth( const std::string &s, double size, bool bold, const char *font )
 {
-	cairo_select_font_face( m_cr, FontFamily(), CAIRO_FONT_SLANT_NORMAL, bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL );
+	cairo_select_font_face( m_cr, FontFamily( font ), CAIRO_FONT_SLANT_NORMAL, bold ? CAIRO_FONT_WEIGHT_BOLD : CAIRO_FONT_WEIGHT_NORMAL );
 	cairo_set_font_size( m_cr, size );
 	cairo_text_extents_t e;
 	cairo_text_extents( m_cr, s.c_str(), &e );
@@ -96,6 +96,7 @@ void ButtonPanel::Draw( Canvas &c, int hovered ) const
 			r += 0.1, g += 0.1, bl += 0.1;
 		c.RoundRect( b.x, b.y, b.w, b.h, 10, r, g, bl );
 		const double size = b.h * 0.42;
-		c.Text( b.label, b.x + ( b.w - c.TextWidth( b.label, size ) ) / 2, b.y + b.h / 2 + size * 0.35, size, 1, 1, 1 );
+		c.Text( b.label, b.x + ( b.w - c.TextWidth( b.label, size, false, b.font ) ) / 2, b.y + b.h / 2 + size * 0.35, size, 1, 1, 1, false,
+			b.font );
 	}
 }

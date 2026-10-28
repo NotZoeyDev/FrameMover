@@ -1,6 +1,7 @@
 #include "app.h"
 #include "backup.h"
 #include "files.h"
+#include "i18n.h"
 #include "log.h"
 #include "vr_math.h"
 
@@ -444,6 +445,12 @@ void App::HandlePanelEvent( const VREvent_t &ev )
 			HandlePanelAction( button.action, button.value );
 			m_panelDirty = true;
 		}
+		else if ( m_languageMenuOpen ) // a click outside the open language menu closes it
+		{
+			m_languageMenuOpen = false;
+			m_hover = -1;
+			m_panelDirty = true;
+		}
 		break;
 	}
 	case VREvent_MouseButtonUp:
@@ -651,6 +658,16 @@ void App::HandlePanelAction( PanelAction action, double value )
 		if ( MoveAllowed() )
 			m_playspace.Translate( { 0, -value, 0 } ); // raising me moves the world down
 		return;
+	case A::LanguageMenu:
+		m_languageMenuOpen = !m_languageMenuOpen;
+		m_hover = -1; // the clickable buttons change with the menu
+		return;
+	case A::Language:
+		i18n::Choose( value < 0 ? nullptr : &i18n::Languages()[(size_t)value] );
+		fprintf( stderr, "language: %s%s\n", i18n::Current().code, value < 0 ? " (automatic)" : "" );
+		m_languageMenuOpen = false;
+		m_hover = -1;
+		return;
 	case A::Turn:
 	{
 		if ( !MoveAllowed() )
@@ -705,6 +722,7 @@ void App::RedrawPanel()
 	model.yawDegrees = m_playspace.YawDegrees();
 	model.bindings = m_bindings;
 	model.inputError = m_inputOk ? "" : m_inputError;
+	model.languageMenuOpen = m_languageMenuOpen;
 	model.controllersConnected = false;
 	for ( ETrackedControllerRole role : { TrackedControllerRole_LeftHand, TrackedControllerRole_RightHand } )
 	{

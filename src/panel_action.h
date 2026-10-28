@@ -4,6 +4,8 @@
 enum class PanelAction
 {
 	Reset, EditBindings, Raise, Turn,
+	LanguageMenu, // opens / closes the language menu
+	Language,     // value: index into i18n::Languages(), -1 for automatic detection
 	DragMultiplier, SnapDegrees, HeightSpeed,
 	LockHeight, LeftHand, RightHand, Haptics, DoublePress, LargeChaperone, DisableChaperone,
 };

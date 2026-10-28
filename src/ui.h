@@ -22,8 +22,10 @@ public:
 
 	void Clear( double r, double g, double b );
 	void RoundRect( double x, double y, double w, double h, double radius, double r, double g, double b );
-	void Text( const std::string &s, double x, double y, double size, double r, double g, double b, bool bold = false );
-	double TextWidth( const std::string &s, double size, bool bold = false );
+	// `font` (a cairo family) defaults to the UI language's font.
+	void Text( const std::string &s, double x, double y, double size, double r, double g, double b, bool bold = false,
+		const char *font = nullptr );
+	double TextWidth( const std::string &s, double size, bool bold = false, const char *font = nullptr );
 	// Tightly packed RGBA8, un-premultiplied (dest holds width*height*4 bytes).
 	void CopyRGBA( uint8_t *dest ) const;
 	bool WritePng( const char *path ) const;
@@ -42,6 +44,7 @@ struct Button
 	bool active;
 	PanelAction action;
 	double value = 0;
+	const char *font = nullptr; // label font; nullptr: the UI language's
 };
 
 class ButtonPanel

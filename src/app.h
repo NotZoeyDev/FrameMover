@@ -109,6 +109,7 @@ private:
 	double m_lastBindingRefresh = -10;
 	bool m_bindingsStale = true;
 	int m_hover = -1;
+	bool m_languageMenuOpen = false;
 	std::vector<std::pair<std::string, std::string>> m_bindings;
 	std::vector<uint8_t> m_lastPanelPixels; // what the compositor currently has
 	std::unique_ptr<VulkanContext> m_vk;    // declared before the texture that lives on it

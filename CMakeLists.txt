@@ -39,6 +39,7 @@ add_executable(frame-mover
   src/i18n.cpp
   src/install.cpp
   src/panel.cpp
+  src/translations.cpp
   src/ui.cpp
   src/vk_texture.cpp)
 target_include_directories(frame-mover PRIVATE src ${OPENVR_HEADERS})
@@ -76,6 +77,6 @@ if(BUILD_TESTING)
     add_test(NAME ${test} COMMAND ${test}_tests)
   endforeach()
   target_sources(config_tests PRIVATE src/config.cpp)
-  target_sources(i18n_tests PRIVATE src/i18n.cpp src/config.cpp)
+  target_sources(i18n_tests PRIVATE src/i18n.cpp src/translations.cpp src/config.cpp)
   set_tests_properties(bindings PROPERTIES WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()

@@ -10,6 +10,8 @@ namespace
 using i18n::Tr;
 constexpr double kLeftX = 40, kLeftW = 740;
 constexpr double kRightX = 840, kRightW = 720;
+// Language box, right-aligned with the left column next to the title.
+constexpr double kLangW = 240, kLangH = 48, kLangX = kLeftX + kLeftW - kLangW, kLangY = 24;
 
 std::string Fmt( const char *f, double a )
 {
@@ -47,16 +49,49 @@ void Toggle( ButtonPanel &bp, double x, double y, const std::string &label, bool
 {
 	bp.Add( { x, y, 362, 50, Tr( label ) + ( on ? ":  ON" : ":  OFF" ), on, action, on ? 0.0 : 1.0 } );
 }
+
+// Small filled triangle pointing down (or up while the menu is open), centred on (cx, cy).
+void Arrow( Canvas &c, double cx, double cy, bool up )
+{
+	cairo_t *cr = c.cr();
+	const double d = up ? -1 : 1;
+	cairo_move_to( cr, cx - 8, cy - 4 * d );
+	cairo_line_to( cr, cx + 8, cy - 4 * d );
+	cairo_line_to( cr, cx, cy + 5 * d );
+	cairo_close_path( cr );
+	cairo_set_source_rgb( cr, 1, 1, 1 );
+	cairo_fill( cr );
+}
+
+// Drop-down under the language box: "Automatic", then every language named in its own script. It replaces the clickable
+// buttons, so a click anywhere else only closes the menu.
+void LanguageMenu( Canvas &c, ButtonPanel &bp, int hovered )
+{
+	const auto &languages = i18n::Languages();
+	const i18n::Language *chosen = i18n::Chosen();
+	bp.Clear();
+	double y = kLangY + kLangH + 10;
+	bp.Add( { kLangX, y, kLangW, kLangH, Tr( "Automatic" ), !chosen, PanelAction::Language, -1 } );
+	for ( size_t i = 0; i < languages.size(); i++ )
+	{
+		y += kLangH + 4;
+		bp.Add( { kLangX, y, kLangW, kLangH, languages[i].name, chosen == &languages[i], PanelAction::Language, (double)i, languages[i].font } );
+	}
+	const double top = kLangY + kLangH + 2, bottom = y + kLangH + 8;
+	c.RoundRect( kLangX - 8, top, kLangW + 16, bottom - top, 12, 0.35, 0.4, 0.5 );
+	c.RoundRect( kLangX - 6, top + 2, kLangW + 12, bottom - top - 4, 11, 0.07, 0.08, 0.11 );
+	bp.Draw( c, hovered );
+}
 } // namespace
 
 void DrawPanel( Canvas &c, ButtonPanel &bp, const PanelModel &m, int hovered )
 {
-	const bool ja = i18n::Japanese();
 	bp.Clear();
 	c.Clear( 0.07, 0.08, 0.11 );
 
 	// ---- left column: state, reset, quick moves, settings -------------------------------------------------------------
 	c.Text( "FrameMover", kLeftX, 64, 42, 1, 1, 1, true );
+	bp.Add( { kLangX, kLangY, kLangW, kLangH, i18n::Current().name, m.languageMenuOpen, PanelAction::LanguageMenu } );
 
 	std::string status;
 	double sr = 0.55, sg = 0.85, sb = 0.6;
@@ -84,11 +119,7 @@ void DrawPanel( Canvas &c, ButtonPanel &bp, const PanelModel &m, int hovered )
 		const double dist = std::sqrt( m.offset.x * m.offset.x + m.offset.y * m.offset.y + m.offset.z * m.offset.z );
 		const std::string pos = "(x " + Fmt( "%+.2f", m.offset.x ) + ", y " + Fmt( "%+.2f", m.offset.y ) + ", z " + Fmt( "%+.2f", m.offset.z ) + ")";
 		const std::string yaw = Fmt( "%.1f", m.yawDegrees ) + "\xC2\xB0";
-		c.Text( Fit( c,
-					ja ? "移動 " + Fmt( "%.2f m", dist ) + " " + pos + "、回転 " + yaw
-					   : "Moved " + Fmt( "%.2f m", dist ) + " " + pos + ", turned " + yaw,
-					23, kLeftW ),
-			kLeftX, 246, 23, 1, 1, 1 );
+		c.Text( Fit( c, Tr( "Moved {0} {1}, turned {2}", { Fmt( "%.2f m", dist ), pos, yaw } ), 23, kLeftW ), kLeftX, 246, 23, 1, 1, 1 );
 	}
 	else
 		c.Text( Tr( "Your playspace is exactly as you saved it." ), kLeftX, 246, 23, 0.7, 0.75, 0.8 );
@@ -97,8 +128,8 @@ void DrawPanel( Canvas &c, ButtonPanel &bp, const PanelModel &m, int hovered )
 	const std::string snap = Fmt( "%.0f", s.snapDegrees ) + "\xC2\xB0";
 	bp.Add( { kLeftX, 266, 362, 58, Tr( "Raise me 5 cm" ), false, PanelAction::Raise, 0.05 } );
 	bp.Add( { 418, 266, 362, 58, Tr( "Lower me 5 cm" ), false, PanelAction::Raise, -0.05 } );
-	bp.Add( { kLeftX, 334, 362, 58, ( ja ? "左に回転 " : "Turn left " ) + snap, false, PanelAction::Turn, -s.snapDegrees } );
-	bp.Add( { 418, 334, 362, 58, ( ja ? "右に回転 " : "Turn right " ) + snap, false, PanelAction::Turn, s.snapDegrees } );
+	bp.Add( { kLeftX, 334, 362, 58, Tr( "Turn left {0}", { snap } ), false, PanelAction::Turn, -s.snapDegrees } );
+	bp.Add( { 418, 334, 362, 58, Tr( "Turn right {0}", { snap } ), false, PanelAction::Turn, s.snapDegrees } );
 
 	Stepper( c, bp, 424, "Grab speed", Fmt( "%.2f", s.dragMultiplier ) + "x",
 		PanelAction::DragMultiplier, std::round( ( s.dragMultiplier - 0.25f ) * 4 ) / 4, std::round( ( s.dragMultiplier + 0.25f ) * 4 ) / 4 );
@@ -141,7 +172,10 @@ void DrawPanel( Canvas &c, ButtonPanel &bp, const PanelModel &m, int hovered )
 	}
 	bp.Add( { kRightX, 782, kRightW, 70, Tr( "Edit bindings in SteamVR" ), false, PanelAction::EditBindings } );
 
-	bp.Draw( c, hovered );
+	bp.Draw( c, m.languageMenuOpen ? -1 : hovered );
+	Arrow( c, kLangX + kLangW - 28, kLangY + kLangH / 2, m.languageMenuOpen );
+	if ( m.languageMenuOpen )
+		LanguageMenu( c, bp, hovered );
 }
 
 void DrawGlyph( Canvas &c, double cx, double cy, double size )

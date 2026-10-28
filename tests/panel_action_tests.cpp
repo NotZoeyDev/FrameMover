@@ -47,7 +47,7 @@ int main()
 	}
 	Settings original;
 	original.overrideGameInput = true;
-	for ( A action : { A::Reset, A::EditBindings, A::Raise, A::Turn,
+	for ( A action : { A::Reset, A::EditBindings, A::Raise, A::Turn, A::LanguageMenu, A::Language,
 		(A)-1, (A)999, (A)std::numeric_limits<int>::min(), (A)std::numeric_limits<int>::max() } )
 	{
 		Settings actual = original;

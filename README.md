@@ -44,8 +44,10 @@ haptics. Settings are stored in `~/.config/frame-mover/config.ini`.
 ## Language
 
 The panel and the SteamVR binding names are available in English and Japanese. The language follows the Steam client's language,
-then `$LC_ALL` / `$LANG`; English is used when neither says Japanese. To force one, set `FRAME_MOVER_LANG=ja|en` or write `ja` or `en`
-into `~/.config/frame-mover/lang`. The UI strings are in `src/i18n.cpp` (Japanese uses Noto Sans CJK JP, which the Frame ships).
+then `$LC_ALL` / `$LANG`; English is used when the language has no translation. To pick one yourself, use the language menu next to
+the panel's title (saved to `~/.config/frame-mover/lang`; "Automatic" goes back to detection), or set `FRAME_MOVER_LANG` (e.g. `ja`,
+`en`), which wins at startup. Translations are a table in `src/translations.cpp`: add an entry there (code, Steam language name,
+native name, font, strings) and a `localization` block in `data/action_manifest.json`; missing strings fall back to English.
 
 ## Quick-launch tile
 

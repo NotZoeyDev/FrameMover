@@ -6,15 +6,18 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
-#include <unordered_map>
-#include <utility>
-#include <vector>
 
 namespace i18n
 {
 namespace
 {
-int g_forced = -1; // -1: detect, 0: English, 1: Japanese
+const Language *g_current = nullptr; // detected on first use
+const Language *g_chosen = nullptr;  // the lang file's language, nullptr when there is none
+
+std::string LangFile()
+{
+	return ConfigDir() + "/lang";
+}
 
 std::string Lower( std::string s )
 {
@@ -42,109 +45,112 @@ std::string SteamLanguage()
 	return "";
 }
 
-bool Detect()
+const Language &Named( std::string_view value )
 {
-	if ( const char *e = getenv( "FRAME_MOVER_LANG" ); e && *e )
-		return NamesJapanese( e );
+	const Language *l = Find( value );
+	return l ? *l : Languages().front();
+}
+
+// Also reads the lang file into g_chosen.
+const Language &Detect()
+{
 	std::string text;
-	if ( files::ReadFile( ConfigDir() + "/lang", text ) && !Lower( text ).empty() )
-		return NamesJapanese( text );
+	const bool chosen = files::ReadFile( LangFile(), text ) && text.find_first_not_of( " \t\r\n" ) != std::string::npos;
+	g_chosen = chosen ? &Named( text ) : nullptr;
+	if ( const char *e = getenv( "FRAME_MOVER_LANG" ); e && *e )
+		return Named( e );
+	if ( g_chosen )
+		return *g_chosen;
 	const std::string steam = SteamLanguage();
 	if ( !steam.empty() )
-		return NamesJapanese( steam );
+		return Named( steam );
 	for ( const char *var : { "LC_ALL", "LC_MESSAGES", "LANG" } )
 		if ( const char *e = getenv( var ); e && *e )
-			return NamesJapanese( e );
-	return false;
+			return Named( e );
+	return Languages().front();
 }
 } // namespace
 
-bool NamesJapanese( std::string_view value )
+const Language *Find( std::string_view value )
 {
 	while ( !value.empty() && isspace( (unsigned char)value.front() ) )
 		value.remove_prefix( 1 );
-	return value.size() >= 2 && tolower( (unsigned char)value[0] ) == 'j' && tolower( (unsigned char)value[1] ) == 'a';
+	while ( !value.empty() && isspace( (unsigned char)value.back() ) )
+		value.remove_suffix( 1 );
+	const std::string v = Lower( std::string( value ) );
+	// The longest matching code wins, so a regional entry ("pt_br") beats its base language ("pt").
+	const Language *best = nullptr;
+	size_t bestLength = 0;
+	for ( const Language &l : Languages() )
+	{
+		if ( v == l.steamName )
+			return &l;
+		const size_t n = strlen( l.code );
+		const bool codeMatches = v.compare( 0, n, l.code ) == 0 && ( v.size() == n || strchr( "_-.@", v[n] ) );
+		if ( codeMatches && n > bestLength )
+			best = &l, bestLength = n;
+	}
+	return best;
 }
 
-bool Japanese()
+const Language &Current()
 {
-	static const bool detected = Detect();
-	return g_forced < 0 ? detected : g_forced == 1;
+	if ( !g_current )
+		g_current = &Detect();
+	return *g_current;
 }
 
-void SetJapanese( bool on )
+const Language *Chosen()
 {
-	g_forced = on ? 1 : 0;
+	Current();
+	return g_chosen;
+}
+
+void Choose( const Language *l )
+{
+	if ( l )
+	{
+		files::MakeDirs( ConfigDir() );
+		files::WriteFile( LangFile(), std::string( l->code ) + "\n" );
+		g_current = g_chosen = l;
+	}
+	else
+	{
+		std::remove( LangFile().c_str() );
+		g_current = &Detect();
+	}
+}
+
+void SetLanguage( std::string_view value )
+{
+	g_current = &Named( value );
 }
 
 std::string Tr( const std::string &en )
 {
-	static const std::unordered_map<std::string, std::string> table = {
-		{ "Reset to original playspace", "元のプレイスペースに戻す" },
-		{ "Your playspace is exactly as you saved it.", "プレイスペースは保存した状態のままです。" },
-		{ "Raise me 5 cm", "5 cm 上げる" },
-		{ "Lower me 5 cm", "5 cm 下げる" },
-		{ "Grab speed", "つかみ速度" },
-		{ "Snap turn angle", "スナップターン角度" },
-		{ "Raise / lower speed", "上げ下げの速度" },
-		{ "Lock height", "高さを固定" },
-		{ "Haptics", "触覚フィードバック" },
-		{ "Left hand grabs", "左手でつかむ" },
-		{ "Right hand grabs", "右手でつかむ" },
-		{ "Double-press + hold to grab", "2度押し＋長押しでつかむ" },
-		{ "Huge chaperone", "巨大シャペロン" },
-		{ "No chaperone", "シャペロンなし" },
-		{ "Nothing is saved to SteamVR: Reset restores exactly the playspace", "SteamVR には何も保存されません。リセットすると、" },
-		{ "and chaperone you had set.", "設定済みのプレイスペースとシャペロンに完全に戻ります。" },
-		{ "Button bindings", "ボタン割り当て" },
-		{ "SteamVR Input: changes you make in the editor show up here at once", "SteamVR 入力：エディタでの変更はすぐここに反映されます" },
-		{ "No controller connected yet: bindings appear once SteamVR sees one.", "コントローラー未接続：SteamVR が認識すると表示されます。" },
-		{ "SteamVR Input unavailable: ", "SteamVR 入力を利用できません：" },
-		{ "Edit bindings in SteamVR", "SteamVR で割り当てを編集" },
-		{ "Ready. Double-press and hold the grab button, then move your hand.", "準備完了：「つかんで移動」を2度押しし、押したまま手を動かす" },
-		{ "Ready. Hold the grab button and move your hand.", "準備完了：「つかんで移動」を押したまま、手を動かす" },
-		{ "Paused: SteamVR is editing the chaperone (room setup).", "一時停止：SteamVR がシャペロン（部屋設定）を編集中です" },
-		{ "Waiting for SteamVR to report your playspace.", "SteamVR からプレイスペース情報を待っています" },
-		// action labels (actions.cpp)
-		{ "Grab and move", "つかんで移動" },
-		{ "Grab and turn", "つかんで回転" },
-		{ "Snap turn left", "左にスナップターン" },
-		{ "Snap turn right", "右にスナップターン" },
-		{ "Raise me", "上げる" },
-		{ "Lower me", "下げる" },
-		{ "Reset to original", "元に戻す" },
-	};
-	if ( !Japanese() )
-		return en;
-	const auto it = table.find( en );
-	return it == table.end() ? en : it->second;
+	const auto &strings = Current().strings;
+	const auto it = strings.find( en );
+	return it == strings.end() ? en : it->second;
+}
+
+std::string Tr( const std::string &en, std::initializer_list<std::string> args )
+{
+	std::string s = Tr( en );
+	size_t i = 0;
+	for ( const std::string &arg : args )
+	{
+		const std::string mark = "{" + std::to_string( i++ ) + "}";
+		for ( size_t p = 0; ( p = s.find( mark, p ) ) != std::string::npos; p += arg.size() )
+			s.replace( p, mark.size(), arg );
+	}
+	return s;
 }
 
 std::string TrBinding( std::string s )
 {
-	if ( !Japanese() )
-		return s;
-	static const std::vector<std::pair<const char *, const char *>> words = {
-		{ "not bound", "未割り当て" },
-		{ "Left Hand", "左手" },
-		{ "Right Hand", "右手" },
-		{ "Thumbstick", "サムスティック" },
-		{ "Bumper", "バンパー" },
-		{ "Trigger", "トリガー" },
-		{ "Grip", "グリップ" },
-		{ "D-Pad", "十字キー" },
-		{ "Dpad", "十字キー" },
-		{ "View", "ビュー" },
-		{ "Menu", "メニュー" },
-		{ "Click", "クリック" },
-		{ " Up", " 上" },
-		{ " Down", " 下" },
-		{ " Left", " 左" },
-		{ " Right", " 右" },
-	};
-	for ( const auto &w : words )
-		for ( size_t p = 0; ( p = s.find( w.first, p ) ) != std::string::npos; p += strlen( w.second ) )
-			s.replace( p, strlen( w.first ), w.second );
+	for ( const auto &w : Current().bindingWords )
+		for ( size_t p = 0; ( p = s.find( w.first, p ) ) != std::string::npos; p += w.second.size() )
+			s.replace( p, w.first.size(), w.second );
 	return s;
 }
 } // namespace i18n
