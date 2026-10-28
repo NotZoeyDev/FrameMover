@@ -64,6 +64,18 @@
       "/actions/playspace/in/heightdown": "Lower yourself (hold)",
       "/actions/playspace/in/resetoriginal": "Reset to original playspace (hold 1.5 s)",
       "/actions/playspace/out/haptic": "Haptic feedback"
+    },
+    {
+      "language_tag": "ja_JP",
+      "/actions/playspace": "FrameMover",
+      "/actions/playspace/in/drag": "プレイスペースをつかんで移動（押したまま手を動かす）",
+      "/actions/playspace/in/turn": "プレイスペースをつかんで自分の周りに回転（押したまま頭の周りで手を振る）",
+      "/actions/playspace/in/snapturnleft": "プレイスペースを左にスナップターン",
+      "/actions/playspace/in/snapturnright": "プレイスペースを右にスナップターン",
+      "/actions/playspace/in/heightup": "自分を上げる（長押し）",
+      "/actions/playspace/in/heightdown": "自分を下げる（長押し）",
+      "/actions/playspace/in/resetoriginal": "元のプレイスペースに戻す（1.5秒長押し）",
+      "/actions/playspace/out/haptic": "触覚フィードバック"
     }
   ]
 }
